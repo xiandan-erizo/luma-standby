@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Debug-only test surface: a settings broadcast and an exported alias for
+         the standby activity, so scripts can drive exact configurations. -->
+    <application>
+        <receiver
+            android:name=".DebugSettingsReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="app.luma.standby.DEBUG_SETTINGS" />
+            </intent-filter>
+        </receiver>
+
+        <activity-alias
+            android:name=".DebugStandby"
+            android:exported="true"
+            android:targetActivity=".StandbyActivity" />
+    </application>
+</manifest>

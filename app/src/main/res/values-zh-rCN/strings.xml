@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Luma Standby</string>
+    <string name="dream_label">Luma Standby</string>
+
+    <string name="app_title">Luma 待机</string>
+
+    <string name="tab_preview">预览</string>
+    <string name="tab_themes">主题</string>
+    <string name="tab_diagnostics">诊断</string>
+
+    <string name="start_standby">启动待机</string>
+    <string name="open_dream_settings">系统屏保设置</string>
+    <string name="preview_note">时钟每分钟只重绘一次，两次重绘之间不运行任何东西。</string>
+
+    <string name="mode_standard">标准</string>
+    <string name="mode_ultra">极省电</string>
+    <string name="mode_showcase">展示</string>
+
+    <string name="themes_duplicate_edit">复制并编辑</string>
+    <string name="themes_edit">编辑</string>
+    <string name="themes_export">导出</string>
+    <string name="themes_import">导入</string>
+    <string name="themes_exported">主题 JSON 已复制到剪贴板</string>
+    <string name="themes_import_invalid">剪贴板里没有有效的主题</string>
+    <string name="themes_imported">已导入 %1$s</string>
+    <string name="themes_saved">已保存 %1$s</string>
+    <string name="themes_deleted">已删除 %1$s</string>
+
+    <string name="section_mode">模式</string>
+    <string name="section_clock">时钟</string>
+    <string name="section_brightness">亮度</string>
+
+    <string name="setting_use_24h">24 小时制</string>
+    <string name="setting_show_seconds">显示秒数</string>
+    <string name="setting_burn_in">防烧屏微移</string>
+    <string name="setting_auto_night">夜间自动降亮（22:00–07:00）</string>
+    <string name="setting_brightness">亮度</string>
+    <string name="setting_brightness_system">跟随系统</string>
+    <string name="brightness_manual">手动：%1$d%%</string>
+
+    <string name="tri_system">跟随系统</string>
+    <string name="tri_on">开</string>
+    <string name="tri_off">关</string>
+
+    <string name="editor_title">编辑主题</string>
+    <string name="editor_name">名称</string>
+    <string name="editor_background">背景色</string>
+    <string name="editor_primary">主色</string>
+    <string name="editor_secondary">辅助色</string>
+    <string name="editor_accent">强调色</string>
+    <string name="editor_font">字体</string>
+    <string name="editor_gradient">渐变背景</string>
+    <string name="editor_gradient_end">渐变终点色</string>
+    <string name="editor_show_seconds">显示秒数</string>
+    <string name="editor_invalid">颜色格式不对，例如 #31596B</string>
+    <string name="font_rounded">圆体</string>
+    <string name="font_sans">无衬线</string>
+    <string name="font_serif">衬线</string>
+    <string name="font_mono">等宽</string>
+
+    <string name="action_save">保存</string>
+    <string name="action_cancel">取消</string>
+    <string name="action_delete">删除</string>
+
+    <string name="diag_refresh">刷新</string>
+    <string name="diag_collecting">正在采集…</string>
+    <string name="diag_device">设备</string>
+    <string name="diag_display">显示</string>
+    <string name="diag_power">电源与电池</string>
+    <string name="diag_dream">屏保服务</string>
+
+    <string name="diag_app">应用版本</string>
+    <string name="diag_android">Android</string>
+    <string name="diag_patch">安全补丁</string>
+    <string name="diag_soc">芯片</string>
+    <string name="diag_hyperos_version">HyperOS 版本</string>
+    <string name="diag_looks_hyperos">判定为 HyperOS</string>
+
+    <string name="diag_resolution">分辨率</string>
+    <string name="diag_density">像素密度</string>
+    <string name="diag_current_refresh">当前刷新率</string>
+    <string name="diag_supported_rates">支持刷新率</string>
+    <string name="diag_arr">ARR 支持</string>
+    <string name="diag_suggested_fps">系统建议帧率</string>
+    <string name="diag_modes">显示模式</string>
+    <string name="diag_rotation">旋转</string>
+    <string name="diag_arr_unknown">未知（API &lt; 36）</string>
+    <string name="diag_unavailable">不可用</string>
+
+    <string name="diag_sample_title">刷新率采样</string>
+    <string name="diag_sample_start">采样 30 秒</string>
+    <string name="diag_sample_running">采样中…</string>
+    <string name="diag_sample_count">采样数</string>
+    <string name="diag_sample_min">最低</string>
+    <string name="diag_sample_max">最高</string>
+    <string name="diag_sample_avg">平均</string>
+    <string name="diag_sample_histogram">分布</string>
+
+    <string name="diag_level">电量</string>
+    <string name="diag_charging">充电</string>
+    <string name="diag_status">状态</string>
+    <string name="diag_temperature">温度</string>
+    <string name="diag_power_save">省电模式</string>
+    <string name="diag_device_idle">Doze</string>
+    <string name="diag_thermal">热状态</string>
+
+    <string name="diag_dream_registered">已注册</string>
+    <string name="diag_dream_selected">用户已选中</string>
+    <string name="diag_note">刷新率是系统上报值，不能证明面板真的在以该频率扫描。</string>
+
+    <string name="yes">是</string>
+    <string name="no">否</string>
+    <string name="not_set">未设置</string>
+    <string name="unknown">未知</string>
+
+    <string name="exit_standby_hint">双击退出</string>
+
+    <string name="section_night">夜间</string>
+    <string name="setting_night_start">夜间开始</string>
+    <string name="setting_night_end">夜间结束</string>
+    <string name="setting_night_level">夜间亮度</string>
+    <string name="night_ramp_label">在 %1$d 分钟内渐变</string>
+    <string name="brightness_mode_system">跟随系统</string>
+    <string name="brightness_mode_manual">手动</string>
+    <string name="themes_export_file">导出到文件</string>
+    <string name="themes_import_file">从文件导入</string>
+    <string name="themes_exported_file">主题已导出</string>
+    <string name="themes_export_failed">导出失败</string>
+    <string name="themes_import_failed">导入失败：%1$s</string>
+</resources>

@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      v0.1 requests no runtime permissions at all.
+      INTERNET / READ_CALENDAR / notification access are deferred to Phase 4
+      and must stay opt-in when they land.
+    -->
+
+    <application
+        android:allowBackup="true"
+        android:icon="@drawable/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@drawable/ic_launcher"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.LumaStandby">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".StandbyActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|smallestScreenSize"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:showWhenLocked="true"
+            android:theme="@style/Theme.LumaStandby.Standby"
+            android:turnScreenOn="true" />
+
+        <!--
+          DreamService is intentionally NOT registered on HyperOS 4 builds: the
+          Settings screen-saver preview path crashes system_server
+          (ActivityTaskManagerService.startDreamActivityLocked NPE, see
+          docs/known-issues.md). The implementation is kept in
+          dream/LumaDreamService.kt plus res/xml/luma_dream.xml so other ROMs can
+          re-enable it - docs/dream-service.md has the exact block to paste back.
+        -->
+    </application>
+
+</manifest>

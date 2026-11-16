@@ -1,0 +1,25 @@
+# Gradle
+.gradle/
+build/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+
+# macOS
+.DS_Store
+
+# Outputs
+*.apk
+*.aab
+*.keystore
+!debug.keystore
+
+# Rust (future core)
+core/native/target/
+.tooling/
+local.properties
