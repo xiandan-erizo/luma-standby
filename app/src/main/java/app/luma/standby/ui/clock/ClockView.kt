@@ -275,7 +275,7 @@ class ClockView @JvmOverloads constructor(
     }
 
     private fun typefaceFor(theme: LumaTheme): Typeface =
-        Typeface.create(theme.font.family, Typeface.NORMAL)
+        Typeface.create(theme.font.family, theme.font.style)
 
     /**
      * A slow four-position drift, one step per minute. It is a burn-in

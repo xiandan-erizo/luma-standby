@@ -110,9 +110,6 @@ class MainActivity : ComponentActivity() {
 
                                 1 -> ThemesScreen(
                                     settings = settings,
-                                    onSelectTheme = { id ->
-                                        scope.launch { repository.update { it.copy(themeId = id) } }
-                                    },
                                     onChange = { transform ->
                                         scope.launch { repository.update(transform) }
                                     },

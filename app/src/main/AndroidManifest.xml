@@ -32,6 +32,7 @@
             android:excludeFromRecents="true"
             android:exported="false"
             android:launchMode="singleTop"
+            android:screenOrientation="sensorLandscape"
             android:showWhenLocked="true"
             android:theme="@style/Theme.LumaStandby.Standby"
             android:turnScreenOn="true" />

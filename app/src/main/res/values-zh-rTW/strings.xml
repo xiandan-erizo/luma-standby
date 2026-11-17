@@ -116,6 +116,8 @@
 
     <string name="exit_standby_hint">雙擊退出</string>
 
+    <string name="section_colors">顏色</string>
+    <string name="section_fonts">字型</string>
     <string name="section_night">夜間</string>
     <string name="setting_night_start">夜間開始</string>
     <string name="setting_night_end">夜間結束</string>

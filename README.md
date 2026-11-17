@@ -21,10 +21,11 @@ What is implemented in this tree:
 |---|---|
 | Gradle project, Compose settings UI, custom Canvas clock | done |
 | Five PRD themes + JSON serialisation | done |
+| 12 curated palettes + 6 typefaces, colour and font chosen independently | done |
 | Theme editor (duplicate → edit colours/font/gradient → save/delete) and JSON export/import via clipboard | done |
 | Device diagnostics page (API level, HyperOS, display modes, ARR, refresh rates, battery, thermal, dream registration) | done |
 | Minute-boundary redraw scheduler (+ time/timezone/date change receivers) | done |
-| `StandbyActivity`: fullscreen landscape, dim, double-tap to exit, KEEP_SCREEN_ON only while charging | done |
+| `StandbyActivity`: fullscreen, dim, double-tap to exit, KEEP_SCREEN_ON only while charging, defaults to `sensorLandscape` | done |
 | `DreamService` integration (screen saver entry) | implemented, **blocked on HyperOS 4** — selecting it crashes system_server (platform NPE), see `docs/known-issues.md` |
 | Refresh-rate *requests* (window preference + Surface intent helper) | done |
 | 30 s refresh-rate sampler for device measurements | done |

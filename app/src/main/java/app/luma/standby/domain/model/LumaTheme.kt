@@ -3,16 +3,27 @@ package app.luma.standby.domain.model
 import android.graphics.Color
 import kotlinx.serialization.Serializable
 
-/** Font families we are willing to ask the platform for. All are system families, no bundled TTF. */
+/**
+ * Font families we are willing to ask the platform for. No bundled TTF, so no
+ * licence ships with the app.
+ *
+ * [style] uses the platform Typeface constants as plain ints (0 normal, 1 bold)
+ * so this file stays loadable in JVM unit tests.
+ */
 @Serializable
-enum class FontChoice(val label: String, val family: String) {
-    ROUNDED("Rounded", "sans-serif-rounded"),
-    SANS("Sans", "sans-serif"),
-    SERIF("Serif", "serif"),
-    MONO("Mono", "monospace"),
+enum class FontChoice(
+    val label: String,
+    val family: String,
+    val style: Int = 0,
+) {
+    ROUNDED("Rounded", "sans-serif-rounded", 0),
+    CONDENSED("Condensed", "sans-serif-condensed", 1),
+    SANS("Sans", "sans-serif", 0),
+    SERIF("Serif", "serif", 0),
+    MONO("Mono", "monospace", 0),
+    LIGHT("Light", "sans-serif-light", 0),
 }
 
-/** The three product modes from the PRD. */
 @Serializable
 enum class DisplayMode {
     STANDARD,

@@ -66,6 +66,24 @@ brick the clock. Alpha is applied only for the exit hint
 `background` to `gradientEnd`. For OLED, a gradient is a compromise: it lights
 more pixels than solid black. Keep gradients for Showcase.
 
+## Palettes and typefaces (2026-11-17)
+
+Colour and typography are separate choices, the way the reference UI splits
+`颜色 / 字体`:
+
+* **12 palettes** live in `PalettePresets`: Ocean Rose, Midnight Lavender, Forest
+  Mist, Burgundy, Black Amber, Sage Ink, Ink Cream, Slate Blue, Terracotta, Plum
+  Noir, Sand, Arctic. Two of them (Sage Ink, Arctic) are light surfaces with dark
+  digits, which the old five-theme set had none of.
+* **6 typefaces** live in `FontChoice`: Rounded, Condensed (bold
+  `sans-serif-condensed`, the tall narrow digits from the reference), Sans, Serif,
+  Mono, Light.
+* Picking a palette keeps the current font; picking a typeface keeps the current
+  colours. Either action on a built-in theme forks it into a custom theme
+  (`custom-<seed>`) so the built-ins stay immutable.
+* The fine-grained editor (hex fields, gradient, per-theme seconds) is still there
+  behind `复制并编辑`.
+
 ## Adding a theme
 
 1. Append to `ThemePresets.all` (built-in) or add to `settings.customThemes`

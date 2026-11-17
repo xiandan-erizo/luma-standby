@@ -3,11 +3,13 @@ package app.luma.standby.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Typeface
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,58 +17,68 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import app.luma.standby.R
 import app.luma.standby.domain.NightMode
 import app.luma.standby.domain.model.DisplayMode
+import app.luma.standby.domain.model.FontChoice
 import app.luma.standby.domain.model.LumaSettings
 import app.luma.standby.domain.model.LumaTheme
 import app.luma.standby.domain.model.resolveColors
+import app.luma.standby.domain.theme.PalettePresets
 import app.luma.standby.domain.theme.ThemeEditing
-import app.luma.standby.domain.theme.ThemeImport
 import app.luma.standby.domain.theme.currentTheme
-import app.luma.standby.domain.theme.themes
+import app.luma.standby.ui.clock.ClockView
+
+private enum class ThemeTab { COLORS, FONTS }
 
 @Composable
 fun ThemesScreen(
     settings: LumaSettings,
-    onSelectTheme: (String) -> Unit,
     onChange: ((LumaSettings) -> LumaSettings) -> Unit,
     onSaveTheme: (LumaTheme) -> Unit,
     onDeleteTheme: (String) -> Unit,
     encodeTheme: (LumaTheme) -> String,
 ) {
-    val themes = remember(settings) { settings.themes() }
-    val selected = remember(settings) { settings.currentTheme() }
+    val current = remember(settings.themeId, settings.customThemes) { settings.currentTheme() }
+    val colors = remember(current) { current.resolveColors() }
     val context = LocalContext.current
-
+    var tab by remember { mutableIntStateOf(0) }
     var editorTarget by remember { mutableStateOf<LumaTheme?>(null) }
     var editorDeletable by remember { mutableStateOf(false) }
 
@@ -76,14 +88,12 @@ fun ThemesScreen(
         if (uri == null) return@rememberLauncherForActivityResult
         val ok = runCatching {
             context.contentResolver.openOutputStream(uri)?.use { stream ->
-                stream.write(encodeTheme(selected).toByteArray())
+                stream.write(encodeTheme(current).toByteArray())
             } != null
         }.getOrDefault(false)
         toast(
             context,
-            context.getString(
-                if (ok) R.string.themes_exported_file else R.string.themes_export_failed,
-            ),
+            context.getString(if (ok) R.string.themes_exported_file else R.string.themes_export_failed),
         )
     }
 
@@ -100,55 +110,132 @@ fun ThemesScreen(
     LazyColumn(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
         contentPadding = PaddingValues(vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = {
-                    editorTarget = ThemeEditing.duplicate(selected, System.currentTimeMillis())
-                    editorDeletable = false
-                }) { Text(stringResource(R.string.themes_duplicate_edit)) }
-
-                OutlinedButton(
-                    enabled = ThemeEditing.isCustom(selected),
-                    onClick = {
-                        editorTarget = selected
-                        editorDeletable = true
+            // Live preview: the real renderer, so the palette and the typeface are
+            // judged on the same pixels the clock will use.
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(1.6f)
+                    .clip(RoundedCornerShape(20.dp)),
+            ) {
+                AndroidView(
+                    modifier = Modifier.fillMaxWidth(),
+                    factory = { ctx -> ClockView(ctx) },
+                    update = { view ->
+                        view.applyState(
+                            theme = current,
+                            use24HourOverride = settings.use24Hour,
+                            showSecondsOverride = settings.showSeconds,
+                            burnInShift = settings.burnInShift,
+                            hint = null,
+                        )
                     },
-                ) { Text(stringResource(R.string.themes_edit)) }
+                )
             }
         }
 
         item {
+            Row(
+                modifier = Modifier.padding(top = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilterChip(
+                    selected = tab == ThemeTab.COLORS.ordinal,
+                    onClick = { tab = ThemeTab.COLORS.ordinal },
+                    label = { Text(stringResource(R.string.section_colors)) },
+                )
+                FilterChip(
+                    selected = tab == ThemeTab.FONTS.ordinal,
+                    onClick = { tab = ThemeTab.FONTS.ordinal },
+                    label = { Text(stringResource(R.string.section_fonts)) },
+                )
+            }
+        }
+
+        if (tab == ThemeTab.COLORS.ordinal) {
+            item {
+                val rows = PalettePresets.all.chunked(3)
+                Column(modifier = Modifier.padding(top = 4.dp)) {
+                    rows.forEach { row ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                        ) {
+                            row.forEach { palette ->
+                                PaletteSwatch(
+                                    palette = palette,
+                                    current = current,
+                                    onClick = {
+                                        onSaveTheme(
+                                            ThemeEditing.withPalette(
+                                                settings,
+                                                palette,
+                                                System.currentTimeMillis(),
+                                            ),
+                                        )
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            item {
+                Column(modifier = Modifier.padding(top = 4.dp)) {
+                    FontChoice.entries.forEach { choice ->
+                        FontCard(
+                            choice = choice,
+                            colors = colors,
+                            selected = current.font == choice,
+                            onClick = {
+                                onSaveTheme(
+                                    ThemeEditing.withFont(settings, choice, System.currentTimeMillis()),
+                                )
+                            },
+                        )
+                        Spacer(Modifier.size(6.dp))
+                    }
+                }
+            }
+        }
+
+        item {
+            HorizontalDivider(Modifier.padding(vertical = 10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = {
+                    editorTarget = ThemeEditing.duplicate(current, System.currentTimeMillis())
+                    editorDeletable = false
+                }) { Text(stringResource(R.string.themes_duplicate_edit)) }
+
+                OutlinedButton(
+                    enabled = ThemeEditing.isCustom(current),
+                    onClick = {
+                        editorTarget = current
+                        editorDeletable = true
+                    },
+                ) { Text(stringResource(R.string.themes_edit)) }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 TextButton(onClick = {
-                    copyToClipboard(context, "luma-theme", encodeTheme(selected))
+                    copyToClipboard(context, "luma-theme", encodeTheme(current))
                     toast(context, context.getString(R.string.themes_exported))
                 }) { Text(stringResource(R.string.themes_export)) }
-
                 TextButton(onClick = {
                     handleImported(context, readClipboard(context), onSaveTheme)
                 }) { Text(stringResource(R.string.themes_import)) }
-
                 TextButton(onClick = { exportLauncher.launch("luma-theme.json") }) {
                     Text(stringResource(R.string.themes_export_file))
                 }
-
                 TextButton(onClick = {
                     importLauncher.launch(arrayOf("application/json", "text/plain"))
                 }) { Text(stringResource(R.string.themes_import_file)) }
             }
         }
 
-        items(themes, key = { it.id }) { theme ->
-            ThemeRow(
-                theme = theme,
-                selected = theme.id == settings.themeId,
-                onClick = { onSelectTheme(theme.id) },
-            )
-        }
-
-        item { HorizontalDivider(Modifier.padding(vertical = 12.dp)) }
+        item { HorizontalDivider(Modifier.padding(vertical = 10.dp)) }
 
         item {
             SectionTitle(stringResource(R.string.section_mode))
@@ -193,9 +280,7 @@ fun ThemesScreen(
                 FilterChip(
                     selected = settings.brightness >= 0f,
                     onClick = {
-                        if (settings.brightness < 0f) {
-                            onChange { it.copy(brightness = 0.35f) }
-                        }
+                        if (settings.brightness < 0f) onChange { it.copy(brightness = 0.1f) }
                     },
                     label = { Text(stringResource(R.string.brightness_mode_manual)) },
                 )
@@ -210,12 +295,14 @@ fun ThemesScreen(
                 modifier = Modifier.padding(top = 8.dp),
             )
             Slider(
-                value = if (settings.brightness < 0f) 0.35f else settings.brightness,
+                value = if (settings.brightness < 0f) 0.1f else settings.brightness,
                 enabled = settings.brightness >= 0f,
                 onValueChange = { value ->
-                    onChange { it.copy(brightness = value.coerceIn(0.01f, 1f)) }
+                    // The platform caps app brightness near 0.10 on this build, so
+                    // the slider's useful travel is 0.01..0.30, not 0..1.
+                    onChange { it.copy(brightness = value.coerceIn(0.01f, 0.3f)) }
                 },
-                valueRange = 0.01f..1f,
+                valueRange = 0.01f..0.3f,
             )
         }
 
@@ -244,17 +331,14 @@ fun ThemesScreen(
                     modifier = Modifier.padding(top = 8.dp),
                 )
                 Slider(
-                    value = settings.nightBrightness.coerceIn(0.02f, 0.5f),
+                    value = settings.nightBrightness.coerceIn(0.02f, 0.3f),
                     onValueChange = { value ->
-                        onChange { it.copy(nightBrightness = value.coerceIn(0.02f, 0.5f)) }
+                        onChange { it.copy(nightBrightness = value.coerceIn(0.02f, 0.3f)) }
                     },
-                    valueRange = 0.02f..0.5f,
+                    valueRange = 0.02f..0.3f,
                 )
                 Text(
-                    text = stringResource(
-                        R.string.night_ramp_label,
-                        settings.nightRampMinutes,
-                    ),
+                    text = stringResource(R.string.night_ramp_label, settings.nightRampMinutes),
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Slider(
@@ -289,6 +373,94 @@ fun ThemesScreen(
     }
 }
 
+@Composable
+private fun PaletteSwatch(palette: LumaTheme, current: LumaTheme, onClick: () -> Unit) {
+    val colors = remember(palette) { palette.resolveColors() }
+    val selected = current.background.equals(palette.background, ignoreCase = true) &&
+        current.primary.equals(palette.primary, ignoreCase = true)
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.padding(6.dp).clickable(onClick = onClick),
+    ) {
+        Canvas(Modifier.size(58.dp)) {
+            val radius = size.minDimension / 2f
+            val center = Offset(size.width / 2f, size.height / 2f)
+            drawCircle(Color(colors.background), radius = radius, center = center)
+            val half = Path().apply {
+                moveTo(center.x, center.y)
+                arcTo(
+                    Rect(center.x - radius, center.y - radius, center.x + radius, center.y + radius),
+                    45f,
+                    180f,
+                    false,
+                )
+                close()
+            }
+            drawPath(half, Color(colors.primary))
+            drawCircle(
+                color = if (selected) Color(0xFFEDE9E2) else Color(0x66FFFFFF),
+                radius = radius,
+                center = center,
+                style = Stroke(width = if (selected) 5f else 2f),
+            )
+        }
+        Text(
+            text = palette.name,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.width(92.dp).padding(top = 4.dp),
+        )
+    }
+}
+
+@Composable
+private fun FontCard(
+    choice: FontChoice,
+    colors: app.luma.standby.domain.model.ResolvedColors,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color(colors.background))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        AndroidView(
+            modifier = Modifier.weight(1f),
+            factory = { ctx ->
+                TextView(ctx).apply {
+                    includeFontPadding = false
+                    textSize = 34f
+                }
+            },
+            update = { view ->
+                view.typeface = Typeface.create(choice.family, choice.style)
+                view.text = "19:25"
+                view.setTextColor(colors.primary)
+            },
+        )
+        Text(
+            text = choice.label,
+            style = MaterialTheme.typography.labelMedium,
+            color = Color(colors.secondary),
+        )
+        if (selected) {
+            Text(
+                text = "  ✓",
+                style = MaterialTheme.typography.labelLarge,
+                color = Color(colors.accent),
+            )
+        }
+    }
+}
+
 private fun handleImported(
     context: Context,
     raw: String?,
@@ -298,8 +470,8 @@ private fun handleImported(
         toast(context, context.getString(R.string.themes_import_invalid))
         return
     }
-    when (val result = ThemeImport.parse(raw)) {
-        is ThemeImport.Result.Ok -> {
+    when (val result = app.luma.standby.domain.theme.ThemeImport.parse(raw)) {
+        is app.luma.standby.domain.theme.ThemeImport.Result.Ok -> {
             val theme = result.theme.copy(
                 id = ThemeEditing.customId(System.currentTimeMillis()),
                 builtIn = false,
@@ -308,7 +480,7 @@ private fun handleImported(
             toast(context, context.getString(R.string.themes_imported, theme.name))
         }
 
-        is ThemeImport.Result.Rejected -> toast(
+        is app.luma.standby.domain.theme.ThemeImport.Result.Rejected -> toast(
             context,
             context.getString(R.string.themes_import_failed, result.reason),
         )
@@ -334,45 +506,6 @@ private fun NightTimeRow(label: String, minutes: Int, onMinutes: (Int) -> Unit) 
             isError = !valid,
             modifier = Modifier.size(width = 120.dp, height = 56.dp),
         )
-    }
-}
-
-@Composable
-private fun ThemeRow(theme: LumaTheme, selected: Boolean, onClick: () -> Unit) {
-    val colors = remember(theme) { theme.resolveColors() }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surface)
-            .clickable(onClick = onClick)
-            .padding(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            modifier = Modifier
-                .size(40.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(Color(colors.background))
-                .border(1.dp, Color(colors.primary), RoundedCornerShape(10.dp)),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                text = "Aa",
-                color = Color(colors.primary),
-                style = MaterialTheme.typography.labelMedium,
-            )
-        }
-        Spacer(Modifier.size(12.dp))
-        Column(Modifier.weight(1f)) {
-            Text(theme.name, style = MaterialTheme.typography.bodyLarge)
-            Text(
-                text = theme.background + " / " + theme.primary,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        RadioButton(selected = selected, onClick = onClick)
     }
 }
 

@@ -116,6 +116,8 @@
 
     <string name="exit_standby_hint">Double tap to exit</string>
 
+    <string name="section_colors">Colour</string>
+    <string name="section_fonts">Typeface</string>
     <string name="section_night">Night</string>
     <string name="setting_night_start">Night starts</string>
     <string name="setting_night_end">Night ends</string>
