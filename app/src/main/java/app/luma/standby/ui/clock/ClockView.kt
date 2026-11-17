@@ -222,28 +222,28 @@ class ClockView @JvmOverloads constructor(
         suffixPaint.typeface = typeface
         suffixPaint.color = colors.secondary
 
-        var size = h * 0.42f
+        val portrait = ClockTypography.isPortrait(w, h)
+        var size = ClockTypography.timeTextSize(h)
         timePaint.textSize = size
-        suffixPaint.textSize = size * 0.16f
+        suffixPaint.textSize = size * ClockTypography.suffixScale()
 
-        // A portrait face has much less horizontal room to waste.
-        val maxWidth = w * if (h > w) 0.86f else 0.78f
-        val gap = if (suffix.isEmpty()) 0f else size * 0.10f
+        val maxWidth = w * ClockTypography.maxWidthFraction(portrait)
+        val gap = if (suffix.isEmpty()) 0f else size * ClockTypography.suffixGapScale()
         var timeWidth = timePaint.measureText(timeText)
         var suffixWidth = if (suffix.isEmpty()) 0f else suffixPaint.measureText(suffix)
 
         val total = timeWidth + gap + suffixWidth
-        if (total > maxWidth && total > 0f) {
-            val scale = maxWidth / total
+        val scale = ClockTypography.shrinkFactor(total, maxWidth)
+        if (scale < 1f) {
             size *= scale
             timePaint.textSize = size
-            suffixPaint.textSize = size * 0.16f
+            suffixPaint.textSize = size * ClockTypography.suffixScale()
             timeWidth = timePaint.measureText(timeText)
             suffixWidth = if (suffix.isEmpty()) 0f else suffixPaint.measureText(suffix)
         }
 
         val startX = (w - (timeWidth + gap + suffixWidth)) / 2f
-        val baseline = h * 0.54f
+        val baseline = ClockTypography.timeBaseline(h)
         canvas.drawText(timeText, startX, baseline, timePaint)
         if (suffix.isNotEmpty()) {
             canvas.drawText(suffix, startX + timeWidth + gap, baseline - size * 0.06f, suffixPaint)
@@ -255,15 +255,13 @@ class ClockView @JvmOverloads constructor(
         datePaint.typeface = typefaceFor(theme)
         datePaint.color = colors.secondary
 
-        var size = h * 0.042f
+        var size = ClockTypography.dateTextSize(h)
         datePaint.textSize = size
         val measured = datePaint.measureText(text)
         val maxWidth = w * 0.86f
-        if (measured > maxWidth && measured > 0f) {
-            size *= maxWidth / measured
-            datePaint.textSize = size
-        }
-        val baseline = if (h > w) h * 0.665f else h * 0.685f
+        size *= ClockTypography.shrinkFactor(measured, maxWidth)
+        datePaint.textSize = size
+        val baseline = ClockTypography.dateBaseline(h, ClockTypography.isPortrait(w, h))
         canvas.drawText(text, w / 2f, baseline, datePaint)
     }
 
@@ -271,9 +269,9 @@ class ClockView @JvmOverloads constructor(
         val hint = hintText
         if (hint.isNullOrEmpty() || hintAlpha <= 0f) return
         hintPaint.color = withAlpha(colors.secondary, 0.45f * hintAlpha)
-        hintPaint.textSize = h * 0.020f
+        hintPaint.textSize = ClockTypography.hintTextSize(h)
         hintPaint.typeface = typefaceFor(theme)
-        canvas.drawText(hint, w / 2f, h * 0.90f, hintPaint)
+        canvas.drawText(hint, w / 2f, ClockTypography.hintBaseline(h), hintPaint)
     }
 
     private fun typefaceFor(theme: LumaTheme): Typeface =

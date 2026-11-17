@@ -47,7 +47,7 @@ kept for other ROMs (`docs/dream-service.md`).
 
 ## Test coverage
 
-`./gradlew :app:testDebugUnitTest` - 40 tests, 0 failures:
+`./gradlew :app:testDebugUnitTest` - 47 tests, 0 failures:
 
 | Suite | Tests | Covers |
 |---|---|---|
@@ -57,6 +57,23 @@ kept for other ROMs (`docs/dream-service.md`).
 | ThemeEditingTest | 6 | duplicate, upsert, delete, hex validation |
 | ThemeJsonTest | 5 | serialisation round-trip, unknown keys, fallbacks |
 | ClockTimingTest | 4 | minute/second boundary scheduling |
+| ClockTypographyTest | 7 | orientation width, vertical order, linear scaling, shrink-to-fit |
+
+## Verified since the first draft of this report
+
+* **Debug settings hook fixed and proven on device.** HyperOS drops implicit
+  broadcasts to a background/stopped app, so the old handler looked successful
+  while never running. The receiver now writes synchronously and returns
+  `result=1, data="ok"`; verified after `am force-stop` that an explicit
+  component broadcast starts the process and the persisted theme/brightness
+  change is readable from the DataStore file.
+* **Settings apply live.** `StandbyActivity` collects the settings flow inside
+  `repeatOnLifecycle(STARTED)`, so a theme/brightness/mode change reaches the
+  clock without relaunching it, and a paused window no longer holds a brightness
+  override.
+* **CI is green** on GitHub Actions (JDK 17, SDK 36, unit tests, debug APK
+  artifact). `setup-android@v3` was removed: it shells out to
+  `sdkmanager tools`, a package cmdline-tools 16 no longer ships.
 
 ## Gate for calling Phase 2 done
 
