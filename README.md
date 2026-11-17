@@ -2,6 +2,8 @@
 
 *Stay beautiful. Stay low power.*
 
+[![android](https://github.com/xiandan-erizo/luma-standby/actions/workflows/android.yml/badge.svg)](https://github.com/xiandan-erizo/luma-standby/actions/workflows/android.yml)
+
 An OLED-first standby screen for modern Android phones: a large landscape clock,
 five hand-tuned themes, and a redraw policy that does nothing between minute
 boundaries. No ads, no accounts, no cloud, no root, no Shizuku.

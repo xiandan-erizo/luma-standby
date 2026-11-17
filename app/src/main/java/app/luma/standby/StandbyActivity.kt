@@ -10,7 +10,9 @@ import androidx.activity.ComponentActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import app.luma.standby.domain.NightMode
 import app.luma.standby.domain.model.DisplayMode
 import app.luma.standby.domain.model.LumaSettings
@@ -62,10 +64,13 @@ class StandbyActivity : ComponentActivity() {
 
         // Live updates: changing theme/brightness/mode in the app while the clock
         // is on screen should take effect without relaunching the activity.
+        // STARTED-scoped: a paused clock must not keep applying window brightness.
         lifecycleScope.launch {
-            repository.settings.collect { latest ->
-                settings = latest
-                applySettings(latest)
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                repository.settings.collect { latest ->
+                    settings = latest
+                    applySettings(latest)
+                }
             }
         }
 
@@ -101,7 +106,6 @@ class StandbyActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         hideSystemBars()
-        applySettings(settings)
         enterInteractive()
     }
 
