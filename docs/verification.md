@@ -104,6 +104,30 @@ that is a finding, not a defect to hide.
 
 ## 6. Power run (30-60 min per configuration)
 
+**Unplug before measuring.** adb over USB charges the phone, so a battery delta on
+USB says nothing about consumption. Use wireless debugging instead:
+
+```bash
+adb tcpip 5555
+adb connect <phone-ip>:5555      # keep USB for this step, then unplug
+adb devices                      # expect <phone-ip>:5555  device
+```
+
+Requirements for `scripts/power-suite.sh`:
+
+* device unlocked (a secure lock would make every sample the lock screen)
+* device not charging (the harness refuses otherwise; `LUMA_ALLOW_CHARGING=1`
+  runs it as a mechanics-only smoke test)
+* screen kept awake by the harness itself
+
+```bash
+./scripts/power-suite.sh 60      # 5 groups x 60 min, samples every 30 s
+```
+
+Output: `.tooling/power-<timestamp>.csv` (per-group summary, including
+`any_unfocused_sample`) plus `.csv.raw` (30 s timeline with level, temperature,
+charge counter, frames, screen state, focus, refresh rate).
+
 Fix room temperature, brightness, airplane mode, charger state. Then:
 
 ```bash

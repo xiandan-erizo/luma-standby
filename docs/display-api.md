@@ -81,6 +81,33 @@ they are free, they are what a well-behaved app should state, and they may be
 honoured by other OEM builds - but the diagnostics page reports the *observed*
 rate, and the README says plainly that 1 Hz is not guaranteed.
 
+## Measured: window brightness is monotonic but capped
+
+Date: 2026-11-17, same device/build. Requested through
+`WindowManager.LayoutParams.screenBrightness`, read back from
+`dumpsys display` -> `Display Brightness=`:
+
+| requested (window attr) | applied display brightness |
+|---|---|
+| 0.05 | 0.0190 |
+| 0.20 | 0.0752 |
+| 0.50 | 0.1023 |
+| 1.00 | 0.1023 |
+
+The window attribute itself is set exactly as asked (`sbrt=0.2` in
+`dumpsys window`), so the request is recorded; what the display applies is
+HyperOS's own mapping, and it saturates around **0.10 of full range**. Requests
+above roughly 0.27 are indistinguishable from each other.
+
+Consequences:
+
+* The brightness slider is honest as a *request*, but its top half is a no-op on
+  this build. This is a product decision waiting to be made (compress the slider
+  into the responsive region vs keep full range for other ROMs).
+* `Settings.System.SCREEN_BRIGHTNESS` was unchanged across all four
+  measurements (49 before, 49-50 after), confirming the app never touches the
+  global setting.
+
 ## Verification protocol (Xiaomi 17)
 
 For each of: native AOD, Luma Standard, Luma Ultra Low Power, Luma Showcase,

@@ -18,9 +18,9 @@ kept for other ROMs (`docs/dream-service.md`).
 | One frame per minute | kept | yes - 6 frames in 130 s |
 | Orientation switch | kept | yes - portrait and landscape both render |
 | Themes, i18n (en / zh-CN / zh-TW) | kept | yes |
-| Manual window brightness | implemented | partial - settings persist, brightness attribute pending final check |
+| Manual window brightness | implemented | yes - window attr exact, display applies a capped mapping |
 | Night window + ramp + cross-midnight | implemented | logic covered by unit tests, device boundary run pending |
-| Theme clipboard / SAF import-export | implemented | clipboard path exercised before the rework, SAF pending |
+| Theme clipboard / SAF import-export | implemented | yes - export to Download, import of valid file, rejection of invalid JSON |
 | Burn-in micro-shift (1-2 px, 20 min) | implemented | sequence unit-tested, 24-48 h observation pending |
 | Power baseline A-E | harness ready | full 5-group run pending |
 | DreamService | blocked on HyperOS 4 | n/a - disabled on purpose |
@@ -58,6 +58,26 @@ kept for other ROMs (`docs/dream-service.md`).
 | ThemeJsonTest | 5 | serialisation round-trip, unknown keys, fallbacks |
 | ClockTimingTest | 4 | minute/second boundary scheduling |
 | ClockTypographyTest | 7 | orientation width, vertical order, linear scaling, shrink-to-fit |
+
+## Device verification, 2026-11-17
+
+**Brightness.** `sbrt` on the window is exactly what we ask (0.05 / 0.2 / 0.5 /
+1.0), and `Display Brightness=` follows monotonically but saturates near 0.102:
+0.05 -> 0.019, 0.2 -> 0.075, 0.5 -> 0.102, 1.0 -> 0.102. Global
+`Settings.System.SCREEN_BRIGHTNESS` stayed at 49-50 throughout. With
+`brightness = -1`, `autoNight` on and `nightBrightness = 0.06`, the applied value
+was 0.0667; pinning manual 0.2 with the same night window applied 0.0752, so
+manual wins over the automatic night value.
+
+**SAF round trip.** Export wrote `/sdcard/Download/luma-theme.json` (314 bytes,
+Burgundy). Importing it created `custom-1794912821312` and selected it. Importing
+a file containing `not-a-theme` showed the toast `导入失败：not-an-object` and left
+the persisted settings untouched (same theme id, still one custom theme).
+
+**Power harness.** v2 refuses to run while charging (USB-attached means charging,
+so a battery delta is meaningless), keeps the screen awake, samples every 30 s and
+records level / temperature / charge counter / frames / screen state / focus, and
+flags any sample taken while the standby face was not focused.
 
 ## Verified since the first draft of this report
 
