@@ -60,9 +60,13 @@ class StandbyActivity : ComponentActivity() {
         setTurnScreenOn(true)
         hideSystemBars()
 
+        // Live updates: changing theme/brightness/mode in the app while the clock
+        // is on screen should take effect without relaunching the activity.
         lifecycleScope.launch {
-            settings = repository.current()
-            applySettings(settings)
+            repository.settings.collect { latest ->
+                settings = latest
+                applySettings(latest)
+            }
         }
 
         // Hand-rolled double tap instead of GestureDetector: the detector's window
