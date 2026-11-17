@@ -21,8 +21,18 @@ current_ua() { adb shell cat /sys/class/power_supply/battery/current_now 2>/dev/
 frames()     { adb shell dumpsys gfxinfo $PKG 2>/dev/null | awk '/Total frames rendered/ {print $4; exit}'; }
 refresh()    { adb shell dumpsys display 2>/dev/null | grep -oE "frameRatehz=[0-9.]+" | head -1 | cut -d= -f2; }
 
+# Two things are needed on HyperOS: an explicit component (implicit broadcasts to
+# a background/stopped app are dropped) and --include-stopped-packages. With only
+# one of them the pin silently did nothing, so the result code is checked.
 pin() {
-  adb shell am broadcast -a app.luma.standby.DEBUG_SETTINGS "$@" > /dev/null 2>&1
+  local out
+  out=$(adb shell am broadcast --include-stopped-packages \
+    -n $PKG/app.luma.standby.DebugSettingsReceiver \
+    -a app.luma.standby.DEBUG_SETTINGS "$@" 2>&1)
+  case "$out" in
+    *result=1*) : ;;
+    *) echo "  WARN pin failed: $out" ;;
+  esac
   sleep 1
 }
 

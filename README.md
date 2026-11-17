@@ -80,9 +80,21 @@ Opening the folder in Android Studio works the same way.
 ### Debug-only test hooks
 
 The debug variant adds two things the release build does not have: a settings
-broadcast (`am broadcast -a app.luma.standby.DEBUG_SETTINGS ...`) and an exported
-`DebugStandby` activity alias, so `scripts/power-suite.sh` can pin an exact
-configuration per measurement group without driving the UI by taps.
+broadcast and an exported `DebugStandby` activity alias, so
+`scripts/power-suite.sh` can pin an exact configuration per measurement group
+without driving the UI by taps.
+
+The broadcast must name the component explicitly and allow stopped packages -
+HyperOS drops implicit broadcasts to a background/stopped app, which makes a
+naive `am broadcast` look successful while doing nothing:
+
+```bash
+adb shell am broadcast --include-stopped-packages \
+  -n app.luma.standby.debug/app.luma.standby.DebugSettingsReceiver \
+  -a app.luma.standby.DEBUG_SETTINGS \
+  --es theme black-amber --ef brightness 0.15 --ez autoNight false
+# -> Broadcast completed: result=1, data="ok"
+```
 
 Dependencies and the Gradle distribution URL are pinned to China-friendly
 mirrors (Aliyun Maven, Tencent Gradle). Point them elsewhere if you prefer.
