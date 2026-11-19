@@ -4,8 +4,7 @@ import android.graphics.Color
 import kotlinx.serialization.Serializable
 
 /**
- * Font families we are willing to ask the platform for. No bundled TTF, so no
- * licence ships with the app.
+ * Font families we are willing to ask the platform for.
  *
  * [style] uses the platform Typeface constants as plain ints (0 normal, 1 bold)
  * so this file stays loadable in JVM unit tests.
@@ -23,6 +22,12 @@ enum class FontChoice(
     SERIF("Serif", "serif", 0),
     MONO("Mono", "monospace", 0),
     LIGHT("Light", "sans-serif-light", 0),
+}
+
+@Serializable
+enum class FaceStyle {
+    SPLIT,
+    FLOAT,
 }
 
 @Serializable
@@ -55,6 +60,7 @@ data class LumaTheme(
     val gradient: Boolean = false,
     val gradientEnd: String = background,
     val font: FontChoice = FontChoice.ROUNDED,
+    val faceStyle: FaceStyle = FaceStyle.SPLIT,
     val showSeconds: Boolean = false,
     val brightnessProfile: BrightnessProfile = BrightnessProfile.STANDARD,
     val builtIn: Boolean = false,

@@ -11,10 +11,14 @@ object BuiltinWidgets {
         override val permission = NONE
         override fun render(data: WidgetData): WidgetContent? {
             val b = data.battery ?: return null
+            val clamped = b.percent.coerceIn(0, 100)
             return WidgetContent(
-                primary = b.percent.toString() + "%",
+                primary = clamped.toString() + "%",
                 secondary = if (b.charging) "charging" else null,
                 glyph = if (b.charging) WidgetGlyph.BOLT else WidgetGlyph.BATTERY,
+                kind = WidgetKind.BATTERY_RING,
+                progress = clamped / 100f,
+                charging = b.charging,
             )
         }
     }
@@ -39,6 +43,7 @@ object BuiltinWidgets {
                 primary = w.temperatureC.toString() + "\u00B0",
                 secondary = w.city ?: condition,
                 glyph = glyphFor(w.condition),
+                kind = WidgetKind.WEATHER_HERO,
             )
         }
 
@@ -62,6 +67,7 @@ object BuiltinWidgets {
             return WidgetContent(
                 primary = String.format(java.util.Locale.US, "%02d:%02d", a.hour, a.minute),
                 glyph = WidgetGlyph.ALARM,
+                kind = WidgetKind.ALARM_BADGE,
             )
         }
     }
@@ -92,6 +98,7 @@ object BuiltinWidgets {
                 primary = m.title,
                 secondary = m.artist,
                 glyph = WidgetGlyph.MUSIC,
+                kind = WidgetKind.MEDIA_NOW,
             )
         }
     }
@@ -106,6 +113,7 @@ object BuiltinWidgets {
                 primary = latest.title,
                 secondary = latest.appLabel,
                 glyph = WidgetGlyph.BELL,
+                kind = WidgetKind.NOTIFICATION_CARD,
             )
         }
     }

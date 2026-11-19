@@ -5,7 +5,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -16,11 +15,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
@@ -28,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import app.luma.standby.R
 import app.luma.standby.domain.model.DisplayMode
+import app.luma.standby.domain.model.FaceStyle
 import app.luma.standby.domain.model.LumaSettings
 import app.luma.standby.domain.theme.currentTheme
 import app.luma.standby.ui.clock.ClockView
@@ -37,6 +35,7 @@ fun PreviewScreen(
     settings: LumaSettings,
     onStart: () -> Unit,
     onModeChange: (DisplayMode) -> Unit,
+    onStyleChange: (FaceStyle) -> Unit = {},
 ) {
     val theme = remember(settings.themeId, settings.customThemes) { settings.currentTheme() }
 
@@ -50,9 +49,6 @@ fun PreviewScreen(
         // colours, same fonts, same date formatter as StandbyActivity.
         Box(
             modifier = Modifier
-                .fillMaxWidth()
-                // Rail-compressed face: fixed height first, then width-derived ratio.
-                // aspectRatio alone wins over heightIn in landscape and clips the face.
                 .fillMaxWidth()
                 .height(200.dp)
                 .clip(RoundedCornerShape(16.dp)),
@@ -72,7 +68,22 @@ fun PreviewScreen(
             )
         }
 
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(12.dp))
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = theme.faceStyle == FaceStyle.FLOAT,
+                onClick = { onStyleChange(FaceStyle.FLOAT) },
+                label = { Text(stringResource(R.string.style_float)) },
+            )
+            FilterChip(
+                selected = theme.faceStyle == FaceStyle.SPLIT,
+                onClick = { onStyleChange(FaceStyle.SPLIT) },
+                label = { Text(stringResource(R.string.style_split)) },
+            )
+        }
+
+        Spacer(Modifier.height(8.dp))
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             DisplayMode.entries.forEach { mode ->
@@ -88,7 +99,6 @@ fun PreviewScreen(
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = onStart) { Text(stringResource(R.string.start_standby)) }
-
         }
 
         Spacer(Modifier.height(12.dp))

@@ -64,14 +64,26 @@ data class MediaInfo(val title: String, val artist: String?, val playing: Boolea
 
 data class NotificationInfo(val appLabel: String, val title: String)
 
+enum class WidgetKind {
+    STANDARD,
+    BATTERY_RING,
+    WEATHER_HERO,
+    ALARM_BADGE,
+    MEDIA_NOW,
+    NOTIFICATION_CARD,
+}
+
 /**
- * What a widget draws. Rendering is primitive-only (text + a small icon glyph) so
+ * What a widget draws. Rendering is primitive-only (text + vector paths/arcs) so
  * the face stays a single Canvas draw and never pulls in Compose per frame.
  */
 data class WidgetContent(
     val primary: String,
     val secondary: String? = null,
     val glyph: WidgetGlyph = WidgetGlyph.NONE,
+    val kind: WidgetKind = WidgetKind.STANDARD,
+    val progress: Float? = null,
+    val charging: Boolean = false,
 )
 
 enum class WidgetGlyph {

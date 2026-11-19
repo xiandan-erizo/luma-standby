@@ -180,5 +180,7 @@
     <string name="city_shenzhen">深圳</string>
     <string name="city_chengdu">成都</string>
     <string name="city_hangzhou">杭州</string>
-    <string name="font_display">高瘦大字</string>
+    <string name="font_display">圆润大字</string>
+    <string name="style_float">Float 叠层</string>
+    <string name="style_split">经典双栏</string>
 </resources>

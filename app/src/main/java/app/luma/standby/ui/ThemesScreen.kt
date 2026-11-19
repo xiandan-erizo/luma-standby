@@ -146,6 +146,37 @@ fun ThemesScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 FilterChip(
+                    selected = current.faceStyle == app.luma.standby.domain.model.FaceStyle.FLOAT,
+                    onClick = {
+                        onSaveTheme(
+                            ThemeEditing.withFaceStyle(
+                                settings,
+                                app.luma.standby.domain.model.FaceStyle.FLOAT,
+                                System.currentTimeMillis(),
+                            ),
+                        )
+                    },
+                    label = { Text(stringResource(R.string.style_float)) },
+                )
+                FilterChip(
+                    selected = current.faceStyle == app.luma.standby.domain.model.FaceStyle.SPLIT,
+                    onClick = {
+                        onSaveTheme(
+                            ThemeEditing.withFaceStyle(
+                                settings,
+                                app.luma.standby.domain.model.FaceStyle.SPLIT,
+                                System.currentTimeMillis(),
+                            ),
+                        )
+                    },
+                    label = { Text(stringResource(R.string.style_split)) },
+                )
+            }
+            Row(
+                modifier = Modifier.padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilterChip(
                     selected = tab == ThemeTab.COLORS.ordinal,
                     onClick = { tab = ThemeTab.COLORS.ordinal },
                     label = { Text(stringResource(R.string.section_colors)) },
@@ -383,7 +414,8 @@ fun ThemesScreen(
 private fun PaletteSwatch(palette: LumaTheme, current: LumaTheme, onClick: () -> Unit) {
     val colors = remember(palette) { palette.resolveColors() }
     val selected = current.background.equals(palette.background, ignoreCase = true) &&
-        current.primary.equals(palette.primary, ignoreCase = true)
+        current.primary.equals(palette.primary, ignoreCase = true) &&
+        current.accent.equals(palette.accent, ignoreCase = true)
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier.padding(6.dp).clickable(onClick = onClick),
@@ -391,18 +423,20 @@ private fun PaletteSwatch(palette: LumaTheme, current: LumaTheme, onClick: () ->
         Canvas(Modifier.size(58.dp)) {
             val radius = size.minDimension / 2f
             val center = Offset(size.width / 2f, size.height / 2f)
+            val bounds = Rect(center.x - radius, center.y - radius, center.x + radius, center.y + radius)
             drawCircle(Color(colors.background), radius = radius, center = center)
-            val half = Path().apply {
+            val primaryArc = Path().apply {
                 moveTo(center.x, center.y)
-                arcTo(
-                    Rect(center.x - radius, center.y - radius, center.x + radius, center.y + radius),
-                    45f,
-                    180f,
-                    false,
-                )
+                arcTo(bounds, -45f, 120f, false)
                 close()
             }
-            drawPath(half, Color(colors.primary))
+            val accentArc = Path().apply {
+                moveTo(center.x, center.y)
+                arcTo(bounds, 75f, 110f, false)
+                close()
+            }
+            drawPath(primaryArc, Color(colors.primary))
+            drawPath(accentArc, Color(colors.accent))
             drawCircle(
                 color = if (selected) Color(0xFFEDE9E2) else Color(0x66FFFFFF),
                 radius = radius,

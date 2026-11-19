@@ -1,5 +1,6 @@
 package app.luma.standby.domain.theme
 
+import app.luma.standby.domain.model.FaceStyle
 import app.luma.standby.domain.model.FontChoice
 import app.luma.standby.domain.model.LumaTheme
 import kotlinx.serialization.json.Json
@@ -61,6 +62,14 @@ object ThemeImport {
                 ?: return Result.Rejected("bad-font")
         }
 
+        val styleName = obj.string("faceStyle")
+        val faceStyle = if (styleName == null) {
+            FaceStyle.SPLIT
+        } else {
+            runCatching { FaceStyle.valueOf(styleName) }.getOrNull()
+                ?: return Result.Rejected("bad-faceStyle")
+        }
+
         val theme = LumaTheme(
             id = id,
             name = name,
@@ -71,6 +80,7 @@ object ThemeImport {
             gradient = obj.boolean("gradient") ?: false,
             gradientEnd = gradientEnd,
             font = font,
+            faceStyle = faceStyle,
             showSeconds = obj.boolean("showSeconds") ?: false,
             brightnessProfile = app.luma.standby.domain.model.BrightnessProfile.STANDARD,
             builtIn = false,

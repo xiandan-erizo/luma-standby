@@ -102,6 +102,18 @@ class MainActivity : ComponentActivity() {
                                     onModeChange = { mode ->
                                         scope.launch { repository.update { it.copy(mode = mode) } }
                                     },
+                                    onStyleChange = { style ->
+                                        scope.launch {
+                                            repository.update {
+                                                val updated = ThemeEditing.withFaceStyle(
+                                                    it,
+                                                    style,
+                                                    System.currentTimeMillis(),
+                                                )
+                                                ThemeEditing.upsert(it, updated)
+                                            }
+                                        }
+                                    },
                                 )
 
                                 1 -> ThemesScreen(

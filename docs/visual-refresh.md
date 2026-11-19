@@ -1,11 +1,22 @@
-# Visual refresh — 2026-11-19
+# Visual refresh — iOS StandBy alignment (2026-11-19)
 
-Reference direction: the owner's blue/pink StandBy screenshots, with tall heavy numerals and compact right-hand date/status information. Not a redistribution of Apple's proprietary font.
+## Overview
 
-Default is **Dusk Teal** (`#2A4A52` / `#E8C9B8` / `#9DB4B0` / `#D9A97F`). The previous default (`#25596A` + `#FFCAD9`) was replaced during the palette rebuild: at 40%+ saturation the background competed with the numerals, which is what made it read as a wallpaper rather than a display surface. All 18 palettes now hold background saturation in an 8-25% band, keep text at 70-88% lightness so it glows rather than blazes, and reserve the accent for small elements only. These are sRGB values, not a nits measurement. Light surfaces (group C) exist for daylight use; the near-black group B exists for OLED.
+`ClockView` and `FaceLayout` now support two switchable iOS StandBy-aligned face styles (`FaceStyle.FLOAT` and `FaceStyle.SPLIT`) on pure-black (`#000000`) OLED duo-tone palettes while preserving the strict 1-draw-per-minute standby budget:
 
-DISPLAY uses the bundled Oswald variable font (requested at weight 700) under SIL OFL 1.1. The complete license is included both in APK raw resources and OSWALD-OFL.txt. Anton was the first attempt and was replaced after a rendered comparison: its hard right-angle transitions and narrow bowls were the main reason the face looked crude next to the reference. Numerals use uniform glyph scale inside fixed tabular cells, controlled vertical expansion, rounded path corners and separately drawn circular colon dots. A slender 1 must not be widened to fill its whole cell. Labels use a restrained Android sans-serif medium rather than the headline face. This is a licensed approximation of the reference style, not a pixel-identical Apple font.
+1. **`FaceStyle.FLOAT` (Float 叠层大字)**:
+   - Heavy, isotropic round-terminal vector numerals (`IosNumerals`) built directly in pixel space inset by half the stroke width (`Paint.Cap.ROUND` / `Paint.Join.ROUND`), eliminating non-uniform X/Y `canvas.scale` distortion.
+   - Negative intra-pair kerning (`-0.145 * unitW`) with alternating `accent` / `primary` vertical gradients and a screen-blended (`PorterDuff.Mode.SCREEN`) overlap highlight on dark surfaces so intersecting strokes glow translucently.
+   - Proportionate frosted colon circles (`radius = 0.49 * strokeWidth`, subtly tilted) and a compact top-right accent weekday + day header when no widgets are placed.
 
-FaceLayout defines separate clock/date/tile bounds. No external fake weather, demo notifications or fabricated media state appear in production. Seven other system font options remain for compatibility (including the bundled DISPLAY option).
+2. **`FaceStyle.SPLIT` (经典双栏组件)**:
+   - Left column: bold rounded digital numerals centered inside a 60-tick rounded-squircle bezel (`IosNumerals.drawSquircleTickRing`) that lights ticks up to the current minute on each minute-boundary redraw (zero extra wakeups).
+   - Right column without widgets: hero StandBy calendar lockup (accent-colored `WEEKDAY · MONTH` overline above an oversized rounded day numeral).
+   - Right column with widgets: dark-glass squircle complication cards (`#16FFFFFF` fill, hairline stroke) dynamically distributed for 1, 2, or 3 placed tiles:
+     - **Battery (`WidgetKind.BATTERY_RING`)**: circular progress arc (`#30D158` green / `#FFD60A` low / `#FF453A` critical, respecting Night Red tint) around a rounded phone silhouette + charging bolt, paired with tabular percentage and status.
+     - **Weather (`WidgetKind.WEATHER_HERO`)**: sky-cyan (`#5AC8FA`) location header (`城市 ↗`), multi-tone vector weather icon, oversized temperature reading, and condition label.
+     - **Alarm / Media / Notification**: tinted circular glyph badges with colored category/app overlines and primary titles.
 
-Known limits: bundled-font rounding needs fresh visual review after the last device disconnect; it is built and JVM-tested, not yet screenshot-accepted. The main preview does not automatically collect remote or private widget data. Calendar and third-party widget hosting are out of scope.
+3. **Palettes (`PalettePresets` / `ThemePresets`)**:
+   - Group S introduces 6 pure-black `#000000` high-contrast duo-tone StandBy presets (`ios-float-blue` default, `ios-coral`, `ios-pink-cyan`, `ios-mint`, `ios-solar`, `ios-night-red`), alongside existing muted dark, near-black, and daylight groups (24 presets total, all legacy IDs preserved).
+   - `PreviewScreen` and `ThemesScreen` expose a 2-chip `Float` / `Split` style toggle without altering the existing 4-tab settings shell.

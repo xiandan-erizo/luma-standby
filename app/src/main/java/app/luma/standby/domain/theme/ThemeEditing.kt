@@ -1,8 +1,9 @@
 package app.luma.standby.domain.theme
 
+import app.luma.standby.domain.model.FaceStyle
+import app.luma.standby.domain.model.FontChoice
 import app.luma.standby.domain.model.LumaSettings
 import app.luma.standby.domain.model.LumaTheme
-import app.luma.standby.domain.theme.PalettePresets
 
 /**
  * Pure edit operations on settings. Keeping these out of the Compose layer means
@@ -38,9 +39,9 @@ object ThemeEditing {
     fun isCustom(theme: LumaTheme): Boolean = !theme.builtIn && theme.id.startsWith(CUSTOM_PREFIX)
 
     /**
-     * Colour and font are independent choices: applying a palette keeps the
-     * current font, applying a font keeps the current colours, and either one on a
-     * built-in theme forks it into a custom theme first.
+     * Colour, font and face style are independent choices: applying a palette keeps
+     * the current font, applying a font keeps the current colours, and changing any
+     * property on a built-in theme forks it into a custom theme first.
      */
     fun withPalette(settings: LumaSettings, palette: LumaTheme, seed: Long): LumaTheme {
         val base = settings.currentTheme()
@@ -48,7 +49,7 @@ object ThemeEditing {
         return PalettePresets.applyPalette(base, palette, customId(seed), name)
     }
 
-    fun withFont(settings: LumaSettings, font: app.luma.standby.domain.model.FontChoice, seed: Long): LumaTheme {
+    fun withFont(settings: LumaSettings, font: FontChoice, seed: Long): LumaTheme {
         val base = settings.currentTheme()
         val forked = if (base.builtIn) {
             base.copy(id = customId(seed), name = base.name + " " + font.label, builtIn = false)
@@ -56,6 +57,18 @@ object ThemeEditing {
             base.copy(name = base.name)
         }
         return forked.copy(font = font)
+    }
+
+    fun withFaceStyle(settings: LumaSettings, style: FaceStyle, seed: Long): LumaTheme {
+        val base = settings.currentTheme()
+        if (base.faceStyle == style && !base.builtIn) return base
+        val styleLabel = if (style == FaceStyle.FLOAT) "Float" else "Split"
+        val forked = if (base.builtIn) {
+            base.copy(id = customId(seed), name = base.name + " " + styleLabel, builtIn = false)
+        } else {
+            base
+        }
+        return forked.copy(faceStyle = style)
     }
 
     fun validateHex(raw: String): String? {

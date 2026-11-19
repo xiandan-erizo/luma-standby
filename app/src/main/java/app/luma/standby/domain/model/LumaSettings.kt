@@ -15,7 +15,7 @@ import kotlinx.serialization.Serializable
  */
 @Serializable
 data class LumaSettings(
-    val themeId: String = "atlantic-rose",
+    val themeId: String = "ios-float-blue",
     val mode: DisplayMode = DisplayMode.STANDARD,
     val use24Hour: Boolean? = null,
     val showSeconds: Boolean? = null,

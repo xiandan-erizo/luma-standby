@@ -5,19 +5,26 @@ import app.luma.standby.domain.model.LumaSettings
 import app.luma.standby.domain.model.LumaTheme
 
 /**
- * The built-in themes. Colour lives in [PalettePresets] so that colour and typeface
- * stay independent choices; these presets just pair each launch palette with the
- * typeface that suits it.
+ * The built-in themes. Colour lives in [PalettePresets] so that colour, face style
+ * and typeface stay independent choices; these presets pair each palette with the
+ * display typeface.
  *
  * Legacy ids (`atlantic-rose`, `burgundy`, ...) are kept as aliases because they
  * are persisted in users' settings and embedded in exported theme JSON.
  */
 object ThemePresets {
 
-    const val DEFAULT_ID = "dusk-teal"
+    const val DEFAULT_ID = "ios-float-blue"
 
     private fun preset(palette: LumaTheme, font: FontChoice): LumaTheme =
         palette.copy(font = font, builtIn = true)
+
+    val iosFloatBlue = preset(PalettePresets.iosFloatBlue, FontChoice.DISPLAY)
+    val iosCoral = preset(PalettePresets.iosCoral, FontChoice.DISPLAY)
+    val iosPinkCyan = preset(PalettePresets.iosPinkCyan, FontChoice.DISPLAY)
+    val iosMint = preset(PalettePresets.iosMint, FontChoice.DISPLAY)
+    val iosSolar = preset(PalettePresets.iosSolar, FontChoice.DISPLAY)
+    val iosNightRed = preset(PalettePresets.iosNightRed, FontChoice.DISPLAY)
 
     val duskTeal = preset(PalettePresets.dusk, FontChoice.DISPLAY)
     val petrol = preset(PalettePresets.petrol, FontChoice.DISPLAY)
@@ -46,7 +53,7 @@ object ThemePresets {
 
     /** Ids that older settings or exported JSON may still carry. */
     private val LEGACY_ALIASES: Map<String, String> = mapOf(
-        "atlantic-rose" to "dusk-teal",
+        "atlantic-rose" to "ios-float-blue",
         "midnight-lavender" to "indigo-mist",
         "forest-mist" to "olive-clay",
         "burgundy" to "wine-slate",
@@ -65,7 +72,7 @@ object ThemePresets {
     fun findById(id: String, custom: List<LumaTheme> = emptyList()): LumaTheme =
         (all + custom).firstOrNull { it.id == id }
             ?: all.firstOrNull { it.id == migrate(id) }
-            ?: duskTeal
+            ?: iosFloatBlue
 }
 
 fun LumaSettings.themes(): List<LumaTheme> = ThemePresets.all + customThemes

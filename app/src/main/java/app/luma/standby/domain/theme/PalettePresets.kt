@@ -1,22 +1,80 @@
 package app.luma.standby.domain.theme
 
 import app.luma.standby.domain.model.BrightnessProfile
-import app.luma.standby.domain.model.FontChoice
+import app.luma.standby.domain.model.FaceStyle
 import app.luma.standby.domain.model.LumaTheme
 
 /**
- * Curated colour pairs, rebuilt around low chroma rather than "nice colours".
+ * Curated StandBy palettes.
  *
- * Why these values and not brighter ones: a standby face is mostly one large
- * colour field with a few glyphs on it. Saturated backgrounds compete with the
- * numbers and read as a phone wallpaper, not as a display surface. Every palette
- * here keeps background saturation in a narrow 8-25% band, holds the text at
- * 70-88% lightness so it glows instead of glowing AT you, and uses the accent only
- * on small elements (the reading, the icon) rather than on whole words.
- *
- * Groups: A = coloured dark surfaces, B = near-black for OLED, C = light surfaces.
+ * Group S (first row): Pure-black (#000000) OLED duo-tone high-contrast pairs
+ * aligned with iOS StandBy (Float sky/cerulean, StandBy coral/white, flamingo/cyan,
+ * mint ring green, solar amber, and nighttime ambient red).
+ * Groups A/B/C: Muted dark surfaces, warm near-black OLED, and daylight surfaces.
  */
 object PalettePresets {
+
+    // S: Pure-black OLED duo-tone pairs (iOS StandBy signature look).
+    val iosFloatBlue = LumaTheme(
+        id = "ios-float-blue",
+        name = "Float Ocean",
+        background = "#000000",
+        primary = "#5AC8FA",
+        secondary = "#8E939E",
+        accent = "#0A84FF",
+        faceStyle = FaceStyle.FLOAT,
+        brightnessProfile = BrightnessProfile.STANDARD,
+    )
+    val iosCoral = LumaTheme(
+        id = "ios-coral",
+        name = "StandBy Coral",
+        background = "#000000",
+        primary = "#F5F7FA",
+        secondary = "#8E8E93",
+        accent = "#FF453A",
+        faceStyle = FaceStyle.SPLIT,
+        brightnessProfile = BrightnessProfile.STANDARD,
+    )
+    val iosPinkCyan = LumaTheme(
+        id = "ios-pink-cyan",
+        name = "Float Flamingo",
+        background = "#000000",
+        primary = "#FF6482",
+        secondary = "#9898A0",
+        accent = "#5AC8FA",
+        faceStyle = FaceStyle.FLOAT,
+        brightnessProfile = BrightnessProfile.STANDARD,
+    )
+    val iosMint = LumaTheme(
+        id = "ios-mint",
+        name = "StandBy Mint",
+        background = "#000000",
+        primary = "#F2F5F7",
+        secondary = "#8E8E93",
+        accent = "#30D158",
+        faceStyle = FaceStyle.SPLIT,
+        brightnessProfile = BrightnessProfile.STANDARD,
+    )
+    val iosSolar = LumaTheme(
+        id = "ios-solar",
+        name = "Float Solar",
+        background = "#000000",
+        primary = "#FFD60A",
+        secondary = "#989388",
+        accent = "#FF9F0A",
+        faceStyle = FaceStyle.FLOAT,
+        brightnessProfile = BrightnessProfile.STANDARD,
+    )
+    val iosNightRed = LumaTheme(
+        id = "ios-night-red",
+        name = "Night Red",
+        background = "#000000",
+        primary = "#FF3B30",
+        secondary = "#9E2A22",
+        accent = "#FF453A",
+        faceStyle = FaceStyle.SPLIT,
+        brightnessProfile = BrightnessProfile.NIGHT,
+    )
 
     // A: coloured dark surfaces. Saturation deliberately restrained.
     val dusk = LumaTheme("dusk-teal", "Dusk Teal", "#2A4A52", "#E8C9B8", "#9DB4B0", "#D9A97F")
@@ -60,16 +118,20 @@ object PalettePresets {
     val blush = LumaTheme("blush", "Blush", "#EDDFDC", "#2E2426", "#7B6C6B", "#544445")
     val coolGrey = LumaTheme("cool-grey", "Cool Grey", "#E4E5E3", "#1E1F1E", "#6E706E", "#444645")
 
+    val groupIos: List<LumaTheme> = listOf(
+        iosFloatBlue, iosCoral, iosPinkCyan, iosMint, iosSolar, iosNightRed,
+    )
     val groupA: List<LumaTheme> = listOf(dusk, petrol, oliveClay, wineSlate, indigoMist, graphiteGold)
     val groupB: List<LumaTheme> = listOf(
         obsidianAmber, inkChampagne, nearBlackSage, cocoaNoir, midnightPlum, coldSteel,
     )
     val groupC: List<LumaTheme> = listOf(bone, paleSage, softSand, mistBlue, blush, coolGrey)
 
-    val all: List<LumaTheme> = groupA + groupB + groupC
+    val all: List<LumaTheme> = groupIos + groupA + groupB + groupC
 
-    /** Order used by the colour tab: dark surfaces first, near-black and light after. */
+    /** Order used by the colour tab: pure-black StandBy pairs first, then surfaces. */
     fun groups(): List<Pair<String, List<LumaTheme>>> = listOf(
+        "S" to groupIos,
         "A" to groupA,
         "B" to groupB,
         "C" to groupC,
@@ -77,7 +139,11 @@ object PalettePresets {
 
     fun findById(id: String): LumaTheme? = all.firstOrNull { it.id == id }
 
-    /** Applies a palette's colours to a theme, keeping its font. */
+    /**
+     * Applies a palette's colours to a theme, keeping its font.
+     * Built-in StandBy duo-tone palettes also carry their default [FaceStyle] unless
+     * the user already customised a theme.
+     */
     fun applyPalette(base: LumaTheme, palette: LumaTheme, id: String, name: String): LumaTheme =
         base.copy(
             id = id,
@@ -87,6 +153,7 @@ object PalettePresets {
             secondary = palette.secondary,
             accent = palette.accent,
             gradientEnd = palette.background,
+            faceStyle = if (palette in groupIos) palette.faceStyle else base.faceStyle,
             brightnessProfile = palette.brightnessProfile,
             builtIn = false,
         )
