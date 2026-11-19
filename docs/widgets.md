@@ -1,89 +1,31 @@
-# Widgets
+# Widgets: current implementation
 
-## The problem with "a generic widget API"
+Luma renders its own small information tiles alongside the clock. This is not Android launcher-widget hosting: Android does provide AppWidgetHost/AppWidgetManager for third-party RemoteViews widgets, but their external layouts and update policies cannot guarantee a consistent appearance or our redraw budget. Native Luma tiles use Android public data APIs with one controlled Canvas renderer.
 
-Android has no single API that hands an app someone else's widget content. iOS looks
-coherent because WidgetKit owns layout, typography and colour; Android gives you a
-pile of independent services, each with its own permission model:
+## Visible features
 
-| Data | Android API | Permission | Reality |
-|---|---|---|---|
-| Battery | `BatteryManager` | none | works everywhere |
-| Next alarm | `AlarmManager.getNextAlarmClock()` | none | null when no clock app set one |
-| Weather | *none* | none if coordinates are hard-coded | needs a provider (we use Open-Meteo, no key) |
-| Notifications | `NotificationListenerService` | user grants "notification access" | powerful and scary; easy to get wrong |
-| Now playing | `MediaSessionManager` / notification extras | same grant | ROM-dependent |
-| Calendar | `CalendarContract` | `READ_CALENDAR` runtime prompt | not wired yet |
-| Location | `LocationManager` | `ACCESS_COARSE/FINE_LOCATION` | deliberately avoided: city is typed in |
+- Battery and next alarm: public SDK sources, no runtime permission.
+- Weather: Open-Meteo, city selected explicitly; offline presets or custom coordinates. Network access starts only when weather is placed and StandbyActivity is RESUMED. Provider terms/attribution: https://open-meteo.com/en/terms and https://open-meteo.com/. No location permission or key.
+- Media: MediaSessionManager active sessions using the exact authorized NotificationListener component. Only PlaybackState.STATE_PLAYING with real metadata is shown. No guessing from application names.
+- Notifications: explicitly enabled listener, newest sanitized title/app label. Private/unknown visibility reveals only the app name; secret, ongoing, group-summary and own notifications are omitted. No body text, no persistent notification cache. Both grant and keyguard state are checked before publishing.
+- Calendar is not implemented and is not shown as a selectable option.
 
-So Luma defines **its own contract** and keeps every OEM difference behind it.
+## Layout
 
-## The contract
+A large clock occupies the left region, with date and up to three information tiles in a separate right rail. The optional bottom-left tile occupies a non-overlapping footer. Icons are hand-drawn vector paths; long text is ellipsized rather than shrunk unreadably or overlapped. All face elements share the slow OLED drift. Missing data produces no fake placeholder.
 
-```kotlin
-interface LumaWidget {
-    val id: String                       // persistence key
-    val label: String                    // settings label
-    val permission: WidgetPermission     // NONE | NOTIFICATION_ACCESS | CALENDAR | LOCATION
-    fun render(data: WidgetData): WidgetContent?   // null = nothing to show
-}
-```
+Settings offer one local preview, localized names, bounded placement chips, six offline city presets and an expandable custom location form. This preview intentionally uses local battery/alarm data only: no weather request or private notification content on settings pages.
 
-Three rules make it safe on a 1-frame-per-minute face:
+## Weather cache / lifecycle
 
-1. **Null means silence.** A widget with no data returns null and draws nothing.
-   There are no placeholders, no "loading" states, no fake dashes on the standby
-   screen.
-2. **Data is collected only for placed widgets.** `WidgetDataCollector` takes the
-   set of enabled ids and never touches a source nobody asked for. No widget, no
-   read, no wakeup.
-3. **Rendering is primitive.** `WidgetContent` is text plus a glyph enum. The face
-   stays one Canvas draw; no Compose, no images, no per-frame allocation beyond a
-   couple of strings.
+WeatherStore has no detached scope or periodic service. update is a child of the visible Activity lifecycle; pause/destroy cancels in-flight IO and disconnects the HTTP request. Snapshot getters never touch disk. Versioned, atomic disk cache is keyed by exact coordinates; changed coordinates cannot expose the previous city's reading. One refresh attempt per 30 minutes (including failed requests), with in-flight deduplication. Readings older than 30 minutes are marked cached and readings older than 24 hours are hidden. No requests in Ultra Low Power.
 
-## Data flow
+Notification snapshots are event-fed. One initial query on explicit opt-in or reconnection seeds the bounded memory cache; no repeated activeNotifications polling. SCREEN_OFF and Activity pause clear already-rendered sensitive tiles and notification memory. Media uses real sessions at redraw/data events. Revocation, missing service and SecurityException fail closed.
 
-```
-settings.widgetPlacements ─┐
-                           ├─> WidgetRenderer.tiles(settings, data)
-WidgetDataCollector.collect│           │
- (battery / alarm /        │           v
-  notifications / weather) └─> ClockView.setWidgets(tiles)
-                                        │
-                              one draw per minute boundary
-```
+## Verified / pending (2026-11-19)
 
-`refreshWidgets()` runs on the clock's own tick and when settings change - there is
-no second timer and no polling loop.
-
-## Placement
-
-Fixed slots (`TOP_RIGHT`, `BOTTOM_RIGHT`, `BOTTOM_LEFT`) rather than absolute
-coordinates: the clock keeps the visual centre, and a column of tiles reads as one
-block because text is right-aligned against a shared margin.
-
-## Weather
-
-* Open-Meteo, no account, no API key, `current=temperature_2m,weather_code`.
-* The user types a city name plus latitude/longitude, so **no location permission**
-  is ever requested.
-* Cached in `filesDir/weather.tsv` with the coordinates that produced it; a city
-  change invalidates the cache immediately.
-* Refreshed at most every **30 minutes**, and only while the weather widget is
-  placed. The clock never blocks on the network: it reads the cache and a refresh
-  lands for a later redraw.
-
-## Notifications
-
-`LumaNotificationListener` reads the app label and title of the newest
-notifications, nothing else. It is declared in the manifest but the OS does not
-start it until the user grants notification access; the widgets screen shows
-"granted / not granted" and offers a shortcut to that setting.
-
-## Deliberately not done yet
-
-* Calendar: needs a runtime permission prompt and a sensible "next event" query;
-  the widget exists but always returns null until the source lands.
-* Media: approximated from notifications rather than `MediaSessionManager`, which
-  needs the same grant and is inconsistent across ROMs.
-* No absolute widget positioning, no custom widget sizes, no third-party widgets.
+- JVM tests cover cache serialization, stale/backoff rules, numeric validation, notification filtering, media gating, and collision-free face geometry. No live notification text is committed to the repository.
+- Xiaomi 17: revised icon/rail layout, real media title/artist and privacy-sanitized app-name notification rendering observed on screen. Bundled blue/pink display font and Chinese settings observed.
+- Beijing selection path exercised; live weather response/cache success was not confirmed before device disconnected. It remains pending, not reported as working end-to-end.
+- Latest uniform-glyph rounding and bounded landscape preview adjustment built/tested locally; fresh on-device screenshot remains pending after disconnection.
+- Power savings and panel 1 Hz remain unproven. No DreamService preview/dock/AOD experiments were performed.

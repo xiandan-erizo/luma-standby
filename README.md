@@ -6,14 +6,14 @@
 
 An OLED-first standby screen for modern Android phones: a large landscape clock,
 five hand-tuned themes, and a redraw policy that does nothing between minute
-boundaries. No ads, no accounts, no cloud, no root, no Shizuku.
+boundaries. No ads, no accounts, no root, no Shizuku. Clock and local tiles work offline; weather is explicitly opt-in.
 
 Target device for v0.1: **Xiaomi 17 (HyperOS)**, but every core feature runs on
 stock Android because it is built only on public SDK APIs.
 
 ---
 
-## Status: Phase 0 + early Phase 1
+## Status: working clock, visual refresh and optional data tiles
 
 What is implemented in this tree:
 
@@ -21,8 +21,8 @@ What is implemented in this tree:
 |---|---|
 | Gradle project, Compose settings UI, custom Canvas clock | done |
 | Five PRD themes + JSON serialisation | done |
-| Widget contract + 6 widgets (battery, weather, alarm, calendar, media, notification) with slot placement | done, see `docs/widgets.md` |
-| 12 curated palettes + 6 typefaces, colour and font chosen independently | done |
+| Five selectable tiles: battery, weather, alarm, media, notifications (calendar deferred) | see [widgets](docs/widgets.md) |
+| 12 curated palettes + 7 typefaces (bundled DISPLAY + 6 system choices), colour and font chosen independently | done |
 | Theme editor (duplicate → edit colours/font/gradient → save/delete) and JSON export/import via clipboard | done |
 | Device diagnostics page (API level, HyperOS, display modes, ARR, refresh rates, battery, thermal, dream registration) | done |
 | Minute-boundary redraw scheduler (+ time/timezone/date change receivers) | done |
@@ -35,7 +35,8 @@ What is implemented in this tree:
 | Manual window brightness + night window with progressive ramp | implemented, unit-tested |
 | Theme JSON import/export (clipboard + SAF) with strict validation | implemented |
 | Burn-in drift 1-2 px every 20 min | implemented, observation pending |
-| Weather, calendar, media, notifications | not started (Phase 4) |
+| Weather / media / notifications | optional; provider/lifecycle and privacy policies implemented |
+| Calendar | deferred; not exposed as an empty feature |
 | Rust core | deliberately deferred, see `docs/architecture.md` |
 
 Localized in English, Simplified Chinese and Traditional Chinese (`values/`,
@@ -48,10 +49,18 @@ What this tree can **not** promise, by design:
   Measured on Xiaomi 17 / HyperOS 4: the request reaches SurfaceFlinger as
   `1.00 Hz`, but the per-app rate override stays at 60 Hz. See
   `docs/display-api.md` for the numbers.
-* That HyperOS hands a third-party APK the native AOD power path. It does not.
+* Native AOD takeover or system-level display power control. These are not implemented or guaranteed.
 * That `screenBrightness = 0.08` means 8 nits. It is a window-relative scalar.
 
 ---
+
+## Current visual refresh (2026-11-19)
+
+Default blue/pink (#25596A / #FFCAD9), a real bundled tall display font, fixed digit cells, hand-drawn status icons and separate clock/information regions. [Design notes](docs/visual-refresh.md). The source does not redistribute Apple's font.
+
+Weather cache/IO is visible-lifecycle scoped and throttled. Notifications are sanitized in memory and hidden when locked; media comes from real playing sessions, never application-name guesses. Six offline city presets replace mandatory manual coordinate entry. No DreamService experiments.
+
+Current local checks: 99 JVM tests passing, `lintDebug` zero errors (26 warnings remain), `assembleDebug` successful. Xiaomi screenshots verified blue/pink layout and real media metadata; final uniform-glyph rounding/preview cap was built after USB disconnection, so final on-device acceptance and live weather fetch remain pending.
 
 ## Verified locally
 
@@ -60,9 +69,9 @@ compileSdk/targetSdk 36, Android platform 36 + build-tools 36.0.0:
 
 * `:app:assembleDebug` → 26.9 MB debug APK (multidex, unminified)
 * `:app:assembleRelease` → 2.26 MB minified APK, R8 clean with kotlinx.serialization
-* `:app:testDebugUnitTest` → 19 tests, 0 failures
+* `:app:testDebugUnitTest` → original baseline: 19 tests; current regression: 99 tests, 0 failures
 
-Not yet verified on hardware — that is what `docs/verification.md` is for.
+These sizes describe the original baseline. See the current visual-refresh section for the latest verification scope.
 
 ## Building
 
@@ -161,5 +170,4 @@ scripts/                       bootstrap/build, device smoke test, power suite,
 
 ## License
 
-Apache-2.0. Fonts are requested from the platform (no bundled TTF), so no font
-license obligations attach to v0.1.
+Apache-2.0. Anton is bundled under SIL OFL 1.1. The complete font license is shipped inside the APK and in [ANTON-OFL](docs/ANTON-OFL.txt).

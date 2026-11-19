@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -117,11 +118,12 @@ fun ThemesScreen(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .aspectRatio(1.6f)
+                    .heightIn(max = 240.dp)
+                    .aspectRatio(2.17f)
                     .clip(RoundedCornerShape(20.dp)),
             ) {
                 AndroidView(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().aspectRatio(2.17f),
                     factory = { ctx -> ClockView(ctx) },
                     update = { view ->
                         view.applyState(
@@ -441,13 +443,21 @@ private fun FontCard(
                 }
             },
             update = { view ->
-                view.typeface = Typeface.create(choice.family, choice.style)
+                view.typeface = app.luma.standby.ui.clock.LumaFonts.resolve(view.context, choice)
                 view.text = "19:25"
                 view.setTextColor(colors.primary)
             },
         )
         Text(
-            text = choice.label,
+            text = stringResource(when (choice) {
+                FontChoice.DISPLAY -> R.string.font_display
+                FontChoice.CONDENSED -> R.string.font_condensed
+                FontChoice.LIGHT -> R.string.font_light
+                FontChoice.ROUNDED -> R.string.font_rounded
+                FontChoice.SANS -> R.string.font_sans
+                FontChoice.SERIF -> R.string.font_serif
+                FontChoice.MONO -> R.string.font_mono
+            }),
             style = MaterialTheme.typography.labelMedium,
             color = Color(colors.secondary),
         )

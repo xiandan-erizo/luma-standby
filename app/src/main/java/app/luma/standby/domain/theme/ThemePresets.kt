@@ -13,11 +13,11 @@ object ThemePresets {
     val atlanticRose = LumaTheme(
         id = "atlantic-rose",
         name = "Atlantic Rose",
-        background = "#31596B",
-        primary = "#F4C9D5",
-        secondary = "#E8E9E7",
-        accent = "#E9A8C0",
-        font = FontChoice.ROUNDED,
+        background = "#25596A",
+        primary = "#FFCAD9",
+        secondary = "#F9D9E3",
+        accent = "#FFF1F4",
+        font = FontChoice.DISPLAY,
         builtIn = true,
     )
 

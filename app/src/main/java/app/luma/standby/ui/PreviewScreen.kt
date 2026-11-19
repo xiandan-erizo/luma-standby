@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -35,7 +36,6 @@ import app.luma.standby.ui.clock.ClockView
 fun PreviewScreen(
     settings: LumaSettings,
     onStart: () -> Unit,
-    onOpenDreamSettings: () -> Unit,
     onModeChange: (DisplayMode) -> Unit,
 ) {
     val theme = remember(settings.themeId, settings.customThemes) { settings.currentTheme() }
@@ -51,7 +51,8 @@ fun PreviewScreen(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(1.55f)
+                .heightIn(max = 240.dp)
+                .aspectRatio(2.17f)
                 .clip(RoundedCornerShape(16.dp)),
         ) {
             AndroidView(
@@ -85,9 +86,7 @@ fun PreviewScreen(
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = onStart) { Text(stringResource(R.string.start_standby)) }
-            OutlinedButton(onClick = onOpenDreamSettings) {
-                Text(stringResource(R.string.open_dream_settings))
-            }
+
         }
 
         Spacer(Modifier.height(12.dp))

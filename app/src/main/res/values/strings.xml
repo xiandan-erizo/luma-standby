@@ -11,7 +11,7 @@
 
     <string name="start_standby">Start standby</string>
     <string name="open_dream_settings">System screen saver settings</string>
-    <string name="preview_note">The clock redraws once per minute. Nothing runs between redraws.</string>
+    <string name="preview_note">The clock updates on minute boundaries. Widgets update when their data changes. Weather connects only after you place it and choose a city.</string>
 
     <string name="mode_standard">Standard</string>
     <string name="mode_ultra">Ultra low</string>
@@ -150,4 +150,35 @@
     <string name="widgets_weather_clear">Clear</string>
     <string name="widgets_weather_saved">Weather location saved</string>
     <string name="widgets_weather_note">Open-Meteo, no account or key. Refreshed at most every 30 minutes, only while the weather widget is placed.</string>
+    <string name="widget_battery">Battery</string>
+    <string name="widget_weather">Weather</string>
+    <string name="widget_alarm">Next alarm</string>
+    <string name="widget_media">Now playing</string>
+    <string name="widget_notification">Notification</string>
+    <string name="widget_charging">Charging</string>
+    <string name="weather_clear">Clear</string>
+    <string name="weather_partly_cloudy">Partly cloudy</string>
+    <string name="weather_cloudy">Cloudy</string>
+    <string name="weather_rain">Rain</string>
+    <string name="weather_snow">Snow</string>
+    <string name="weather_thunder">Thunderstorm</string>
+    <string name="weather_fog">Fog</string>
+    <string name="weather_cached">Cached</string>
+    <string name="widgets_privacy_note">Notification access is optional. Titles are kept only in memory. Private notifications show the app name; sensitive widgets disappear when locked.</string>
+    <string name="font_condensed">Condensed</string>
+    <string name="font_light">Light</string>
+    <string name="standby_subtitle">A quiet clock for your desk</string>
+    <string name="widgets_preview_heading">Preview</string>
+    <string name="widgets_preview_empty">No local data to preview</string>
+    <string name="widgets_slot_full">Slot full</string>
+    <string name="widgets_weather_custom">Custom location</string>
+    <string name="widgets_weather_invalid">Enter valid latitude (-90 to 90) and longitude (-180 to 180)</string>
+    <string name="widgets_weather_current">Current: %1$s</string>
+    <string name="city_beijing">Beijing</string>
+    <string name="city_shanghai">Shanghai</string>
+    <string name="city_guangzhou">Guangzhou</string>
+    <string name="city_shenzhen">Shenzhen</string>
+    <string name="city_chengdu">Chengdu</string>
+    <string name="city_hangzhou">Hangzhou</string>
+    <string name="font_display">Display</string>
 </resources>

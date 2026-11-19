@@ -12,13 +12,13 @@
 {
   "id": "atlantic-rose",
   "name": "Atlantic Rose",
-  "background": "#31596B",
-  "primary": "#F4C9D5",
+  "background": "#25596A",
+  "primary": "#FFCAD9",
   "secondary": "#E8E9E7",
   "accent": "#E9A8C0",
   "gradient": false,
-  "gradientEnd": "#31596B",
-  "font": "ROUNDED",
+  "gradientEnd": "#25596A",
+  "font": "DISPLAY",
   "showSeconds": false,
   "brightnessProfile": "STANDARD",
   "builtIn": true
@@ -33,7 +33,7 @@ hand-written file still loads.
 
 | id | Background | Primary | Intent |
 |---|---|---|---|
-| `atlantic-rose` | #31596B | #F4C9D5 | default, ocean + sakura |
+| `atlantic-rose` | #25596A | #FFCAD9 | default, ocean + sakura |
 | `midnight-lavender` | #24283B | #D9CDED | quiet, techy |
 | `forest-mist` | #354A40 | #E8E1CE | natural, warm |
 | `burgundy` | #492E3B | #F0CDD2 | vintage, textured |
@@ -51,14 +51,7 @@ brick the clock. Alpha is applied only for the exit hint
 
 ## Typography
 
-* Families come from the platform: `sans-serif-rounded`, `sans-serif`, `serif`,
-  `monospace`. No TTF is bundled, so no font licence ships with the app and no
-  1–2 MB of glyphs sits in the APK.
-* Time uses `fontFeatureSettings = "tnum"` (tabular figures) so the minute roll
-  cannot nudge horizontal layout.
-* Size is computed from view height and *then* clamped to 78% of width, so a
-  Ultra-Low-Power 3-glyph face and a Showcase `HH:mm:ss` face both fit without a
-  second layout pass.
+DISPLAY is bundled Anton under SIL OFL 1.1, not a system family alias. Shared tabular cells preserve narrow digits, circular colon dots and a tall silhouette. Six system alternatives remain. Labels use sans-serif medium. The license is shipped in the APK and [ANTON-OFL](ANTON-OFL.txt). This approximates the reference, not Apple's proprietary font.
 
 ## Gradient
 
@@ -75,7 +68,7 @@ Colour and typography are separate choices, the way the reference UI splits
   Mist, Burgundy, Black Amber, Sage Ink, Ink Cream, Slate Blue, Terracotta, Plum
   Noir, Sand, Arctic. Two of them (Sage Ink, Arctic) are light surfaces with dark
   digits, which the old five-theme set had none of.
-* **6 typefaces** live in `FontChoice`: Rounded, Condensed (bold
+* **7 typefaces** live in `FontChoice`: DISPLAY (Anton), Rounded, Condensed (bold
   `sans-serif-condensed`, the tall narrow digits from the reference), Sans, Serif,
   Mono, Light.
 * Picking a palette keeps the current font; picking a typeface keeps the current
@@ -92,8 +85,6 @@ Colour and typography are separate choices, the way the reference UI splits
 3. Verify contrast: primary on background should clear ~4.5:1 for a *large*
    glyph, which is easy; secondary text at 0.045 × height needs ~3:1 minimum.
 
-## Not yet implemented
+## Remaining work
 
-Editor UI for arbitrary colours/fonts, theme save/delete/rename, share as file,
-auto day/night theme switching (`autoNight` exists in settings but is currently
-only a stored flag — wire it in Phase 2).
+Long-duration OLED drift observation, live weather cache verification, and final screenshot acceptance after USB disconnection. Theme clipboard/SAF editing/export exists; strict import validation still has gaps for unknown fields/types and is outside this visual refresh.

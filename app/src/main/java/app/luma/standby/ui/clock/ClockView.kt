@@ -62,6 +62,7 @@ class ClockView @JvmOverloads constructor(
     private var theme: LumaTheme = ThemePresets.atlanticRose
     private var colors: ResolvedColors = theme.resolveColors()
     private var use24Hour: Boolean = false
+    private var use24HourOverride: Boolean? = null
     private var showSeconds: Boolean = false
     private var burnInDrift: Boolean = true
     private var hintText: String? = null
@@ -106,10 +107,12 @@ class ClockView @JvmOverloads constructor(
 
     private val timeReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context?, intent: Intent?) {
-            if (intent?.action == Intent.ACTION_LOCALE_CHANGED) {
+            if (intent?.action == Intent.ACTION_LOCALE_CHANGED || intent?.action == Intent.ACTION_TIMEZONE_CHANGED) {
                 dateFormatter = buildDateFormatter()
             }
+            use24Hour = use24HourOverride ?: DateFormat.is24HourFormat(context)
             scheduler.reschedule()
+            onTick?.invoke()
             invalidate()
         }
     }
@@ -123,6 +126,7 @@ class ClockView @JvmOverloads constructor(
     ) {
         this.theme = theme
         this.colors = theme.resolveColors()
+        this.use24HourOverride = use24HourOverride
         this.use24Hour = use24HourOverride ?: DateFormat.is24HourFormat(context)
         this.showSeconds = showSecondsOverride ?: theme.showSeconds
         this.burnInDrift = burnInShift
@@ -149,11 +153,14 @@ class ClockView @JvmOverloads constructor(
     }
 
     fun resumeTicking() {
+        registerTimeReceiver()
         scheduler.start()
     }
 
     fun pauseTicking() {
         scheduler.stop()
+        hintHandler.removeCallbacks(hideHint)
+        unregisterTimeReceiver()
     }
 
     override fun onAttachedToWindow() {
@@ -178,36 +185,17 @@ class ClockView @JvmOverloads constructor(
         val w = width.toFloat()
         val h = height.toFloat()
         if (w <= 0f || h <= 0f) return
-
         drawBackground(canvas, w, h)
 
-        val calendar = Calendar.getInstance()
-        val minuteOfDay = calendar.get(Calendar.HOUR_OF_DAY) * 60 + calendar.get(Calendar.MINUTE)
-        val drift = driftFor(minuteOfDay)
-
+        val now = Calendar.getInstance()
+        val layout = FaceLayout.create(w, h, widgetTiles.isNotEmpty())
+        val drift = driftFor(now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE))
         canvas.save()
         canvas.translate(drift.first, drift.second)
-
-        val hour24 = calendar.get(Calendar.HOUR_OF_DAY)
-        val hour = if (use24Hour) hour24 else {
-            val h12 = hour24 % 12
-            if (h12 == 0) 12 else h12
-        }
-        val minute = calendar.get(Calendar.MINUTE)
-        val second = calendar.get(Calendar.SECOND)
-
-        val timeText = if (showSeconds) {
-            String.format(Locale.US, "%02d:%02d:%02d", hour, minute, second)
-        } else {
-            String.format(Locale.US, "%02d:%02d", hour, minute)
-        }
-        val suffix = if (use24Hour) "" else if (hour24 < 12) "AM" else "PM"
-
-        drawTime(canvas, w, h, timeText, suffix)
-        drawDate(canvas, w, h)
-        drawWidgets(canvas, w, h)
+        drawTime(canvas, layout.clock, now)
+        drawDate(canvas, layout.date)
+        drawWidgets(canvas, layout)
         drawHint(canvas, w, h)
-
         canvas.restore()
     }
 
@@ -215,138 +203,138 @@ class ClockView @JvmOverloads constructor(
         if (theme.gradient) {
             val key = theme.id + ":" + theme.background + ":" + theme.gradientEnd
             if (shaderKey != key || shaderWidth != w || shaderHeight != h) {
-                backgroundPaint.shader = LinearGradient(
-                    0f,
-                    0f,
-                    w,
-                    h,
-                    colors.background,
-                    colors.backgroundEnd,
-                    Shader.TileMode.CLAMP,
-                )
-                shaderKey = key
-                shaderWidth = w
-                shaderHeight = h
+                backgroundPaint.shader = LinearGradient(0f, 0f, w, h, colors.background, colors.backgroundEnd, Shader.TileMode.CLAMP)
+                shaderKey = key; shaderWidth = w; shaderHeight = h
             }
         } else {
-            if (shaderKey != null) {
-                backgroundPaint.shader = null
-                shaderKey = null
-            }
+            if (shaderKey != null) { backgroundPaint.shader = null; shaderKey = null }
             backgroundPaint.color = colors.background
         }
         canvas.drawRect(0f, 0f, w, h, backgroundPaint)
     }
 
-    private fun drawTime(canvas: Canvas, w: Float, h: Float, timeText: String, suffix: String) {
-        val typeface = typefaceFor(theme)
-        timePaint.typeface = typeface
-        timePaint.color = colors.primary
-        suffixPaint.typeface = typeface
-        suffixPaint.color = colors.secondary
-
-        val portrait = ClockTypography.isPortrait(w, h)
-        var size = ClockTypography.timeTextSize(h)
-        timePaint.textSize = size
-        suffixPaint.textSize = size * ClockTypography.suffixScale()
-
-        val maxWidth = w * ClockTypography.maxWidthFraction(portrait)
-        val gap = if (suffix.isEmpty()) 0f else size * ClockTypography.suffixGapScale()
-        var timeWidth = timePaint.measureText(timeText)
-        var suffixWidth = if (suffix.isEmpty()) 0f else suffixPaint.measureText(suffix)
-
-        val total = timeWidth + gap + suffixWidth
-        val scale = ClockTypography.shrinkFactor(total, maxWidth)
-        if (scale < 1f) {
-            size *= scale
-            timePaint.textSize = size
-            suffixPaint.textSize = size * ClockTypography.suffixScale()
-            timeWidth = timePaint.measureText(timeText)
-            suffixWidth = if (suffix.isEmpty()) 0f else suffixPaint.measureText(suffix)
+    private fun drawTime(canvas: Canvas, box: FaceBox, calendar: Calendar) {
+        val hour24 = calendar.get(Calendar.HOUR_OF_DAY)
+        val hour = if (use24Hour) hour24 else (hour24 % 12).let { if (it == 0) 12 else it }
+        val minute = calendar.get(Calendar.MINUTE)
+        val second = calendar.get(Calendar.SECOND)
+        val text = if (showSeconds) String.format(Locale.US, "%02d:%02d:%02d", hour, minute, second)
+                   else String.format(Locale.US, "%02d:%02d", hour, minute)
+        val suffix = if (use24Hour) "" else if (hour24 < 12) "AM" else "PM"
+        if (theme.font == app.luma.standby.domain.model.FontChoice.DISPLAY) {
+            drawDisplayDigits(canvas, box, text, suffix)
+            return
         }
+        val face = typefaceFor(theme)
+        timePaint.typeface = face; timePaint.color = colors.primary
+        suffixPaint.typeface = face; suffixPaint.color = withAlpha(colors.secondary, .82f)
+        var size = box.height * .90f
+        fun measure(): Triple<Float,Float,Float> {
+            timePaint.textSize=size; suffixPaint.textSize=size*.13f
+            val tw=timePaint.measureText(text); val sw=if(suffix.isEmpty())0f else suffixPaint.measureText(suffix)
+            return Triple(tw,sw,if(suffix.isEmpty())0f else size*.06f)
+        }
+        var measured=measure(); val scale=ClockTypography.shrinkFactor(measured.first+measured.second+measured.third,box.width)
+        size*=scale; measured=measure()
+        val total=measured.first+measured.second+measured.third
+        val x=box.left+(box.width-total)/2f
+        val baseline=box.top+(box.height-(timePaint.ascent()+timePaint.descent()))/2f
+        canvas.drawText(text,x,baseline,timePaint)
+        if(suffix.isNotEmpty()) canvas.drawText(suffix,x+measured.first+measured.third,baseline-size*.03f,suffixPaint)
+    }
 
-        val startX = (w - (timeWidth + gap + suffixWidth)) / 2f
-        val baseline = ClockTypography.timeBaseline(h)
-        canvas.drawText(timeText, startX, baseline, timePaint)
+    private fun drawDisplayDigits(canvas: Canvas, box: FaceBox, text: String, suffix: String) {
+        timePaint.typeface = LumaFonts.resolve(context, theme.font)
+        timePaint.color = colors.primary; timePaint.textSize = 1000f
+        val digits = text.count { it.isDigit() }
+        val colons = text.count { it == ':' }
+        val digitWidth = box.width / (digits + colons * .45f + (digits - 1) * .055f)
+        val spacing = digitWidth * .055f
+        val bounds = android.graphics.Rect()
+        timePaint.getTextBounds("0", 0, 1, bounds)
+        val referenceWidth = bounds.width().coerceAtLeast(1).toFloat()
+        val referenceHeight = bounds.height().coerceAtLeast(1).toFloat()
+        val referenceTop = bounds.top.toFloat()
+        var x = box.left
+        for (char in text) {
+            if (char == ':') {
+                val cx = x + digitWidth * .225f
+                canvas.drawCircle(cx, box.top + box.height * .27f, digitWidth * .15f, timePaint)
+                canvas.drawCircle(cx, box.top + box.height * .73f, digitWidth * .15f, timePaint)
+                x += digitWidth * .45f
+            } else {
+                val glyph = char.toString()
+                timePaint.getTextBounds(glyph, 0, 1, bounds)
+                canvas.save(); canvas.translate(x, box.top)
+                // Uniform glyph scale: stretching each glyph to its own bounds turns
+                // a slim 1 into a wide slab. Keep a shared tabular cell and centre it.
+                canvas.scale(digitWidth / referenceWidth, box.height / referenceHeight)
+                val textX = (referenceWidth - bounds.width()) / 2f - bounds.left
+                val path = android.graphics.Path()
+                timePaint.getTextPath(glyph, 0, 1, textX, -referenceTop, path)
+                timePaint.pathEffect = android.graphics.CornerPathEffect(12f)
+                canvas.drawPath(path, timePaint)
+                timePaint.pathEffect = null
+                canvas.restore(); x += digitWidth + spacing
+            }
+        }
         if (suffix.isNotEmpty()) {
-            canvas.drawText(suffix, startX + timeWidth + gap, baseline - size * 0.06f, suffixPaint)
+            suffixPaint.typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            suffixPaint.textSize = box.height * .055f; suffixPaint.color = colors.secondary
+            canvas.drawText(suffix, box.left, box.bottom + suffixPaint.textSize * 1.4f, suffixPaint)
         }
     }
 
-    private fun drawDate(canvas: Canvas, w: Float, h: Float) {
-        val text = dateFormatter.format(Date())
-        datePaint.typeface = typefaceFor(theme)
-        datePaint.color = colors.secondary
-
-        var size = ClockTypography.dateTextSize(h)
-        datePaint.textSize = size
-        val measured = datePaint.measureText(text)
-        val maxWidth = w * 0.86f
-        size *= ClockTypography.shrinkFactor(measured, maxWidth)
-        datePaint.textSize = size
-        val baseline = ClockTypography.dateBaseline(h, ClockTypography.isPortrait(w, h))
-        canvas.drawText(text, w / 2f, baseline, datePaint)
+    private fun drawDate(canvas: Canvas, box: FaceBox) {
+        val text = if (widgetTiles.isNotEmpty()) DateFormat.format(if (Locale.getDefault().language == "zh") "d EEE" else "EEE d", Date()).toString() else dateFormatter.format(Date())
+        datePaint.typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL); datePaint.color=colors.primary
+        var size=box.height*.34f; datePaint.textSize=size
+        size*=ClockTypography.shrinkFactor(datePaint.measureText(text),box.width); datePaint.textSize=size
+        canvas.drawText(text,box.left+box.width/2f,box.top+(box.height-(datePaint.ascent()+datePaint.descent()))/2f,datePaint)
     }
 
-    /**
-     * Widgets occupy the two right-hand corners so the clock keeps the visual
-     * centre of the screen. Text is right-aligned against a shared margin, which
-     * makes a column of tiles read as one block rather than a scatter.
-     */
-    private fun drawWidgets(canvas: Canvas, w: Float, h: Float) {
-        if (widgetTiles.isEmpty()) return
-        val typeface = typefaceFor(theme)
-        val margin = w * 0.055f
-        val lineGap = h * 0.028f
-
-        widgetPrimaryPaint.typeface = typeface
-        widgetPrimaryPaint.color = colors.primary
-        widgetPrimaryPaint.textSize = h * 0.034f
-        widgetSecondaryPaint.typeface = typeface
-        widgetSecondaryPaint.color = withAlpha(colors.secondary, 0.72f)
-        widgetSecondaryPaint.textSize = h * 0.020f
-
-        val top = widgetTiles.filter { it.slot == WidgetSlot.TOP_RIGHT }
-        val bottom = widgetTiles.filter { it.slot == WidgetSlot.BOTTOM_RIGHT }
-
-        var y = h * 0.085f
-        top.forEach { tile ->
-            y = drawTile(canvas, tile, w - margin, y, lineGap)
-            y += lineGap
-        }
-
-        var bottomY = h * 0.925f
-        bottom.asReversed().forEach { tile ->
-            bottomY -= (h * 0.020f + if (tile.content.secondary == null) 0f else h * 0.020f)
-            drawTile(canvas, tile, w - margin, bottomY, lineGap)
-            bottomY -= lineGap * 0.5f
-        }
+    private fun drawWidgets(canvas: Canvas, layout: FaceLayout) {
+        if(widgetTiles.isEmpty()) return
+        val right=widgetTiles.filter{it.slot==WidgetSlot.TOP_RIGHT||it.slot==WidgetSlot.BOTTOM_RIGHT}
+        val left=widgetTiles.filter{it.slot==WidgetSlot.BOTTOM_LEFT}
+        right.take(layout.rightTiles.size).forEachIndexed{i,tile->drawTile(canvas,tile,layout.rightTiles[i])}
+        layout.leftTile?.let { box -> left.firstOrNull()?.let { drawTile(canvas,it,box) } }
     }
 
-    private fun drawTile(canvas: Canvas, tile: WidgetTile, right: Float, baseline: Float, gap: Float): Float {
-        val content = tile.content
-        val glyphWidth = if (content.glyph == WidgetGlyph.NONE) 0f else widgetSecondaryPaint.textSize * 1.1f
-        canvas.drawText(content.primary, right - glyphWidth, baseline, widgetPrimaryPaint)
-        var next = baseline
-        val secondary = content.secondary
-        if (secondary != null) {
-            next = baseline + gap
-            canvas.drawText(secondary, right, next, widgetSecondaryPaint)
+    private fun drawTile(canvas: Canvas, tile: WidgetTile, box: FaceBox) {
+        val c=tile.content; val face=Typeface.create("sans-serif-medium",Typeface.NORMAL)
+        val iconSize=box.height*.30f; val iconX=box.left+iconSize*.55f; val centerY=box.top+box.height/2f
+        WidgetIcons.draw(canvas,c.glyph,iconX-iconSize/2f,centerY-iconSize/2f,iconSize,withAlpha(colors.accent,.92f))
+        val textLeft=if(c.glyph==WidgetGlyph.NONE) box.left else box.left+iconSize*1.25f
+        val available=(box.right-textLeft).coerceAtLeast(1f)
+        widgetPrimaryPaint.textAlign=Paint.Align.LEFT; widgetPrimaryPaint.typeface=face; widgetPrimaryPaint.color=colors.primary
+        widgetSecondaryPaint.textAlign=Paint.Align.LEFT; widgetSecondaryPaint.typeface=face; widgetSecondaryPaint.color=withAlpha(colors.secondary,.62f)
+        var primarySize=box.height*(if(c.secondary==null).38f else .31f); widgetPrimaryPaint.textSize=primarySize
+        widgetPrimaryPaint.textSize=primarySize
+        val primary=android.text.TextUtils.ellipsize(c.primary, android.text.TextPaint(widgetPrimaryPaint), available, android.text.TextUtils.TruncateAt.END).toString()
+        val hasSecondary=!c.secondary.isNullOrBlank(); val primaryY=if(hasSecondary)box.top+box.height*.46f else box.top+box.height*.62f
+        canvas.drawText(primary,textLeft,primaryY,widgetPrimaryPaint)
+        c.secondary?.takeIf{it.isNotBlank()}?.let { secondary ->
+            var s=box.height*.19f; widgetSecondaryPaint.textSize=s
+            val line=android.text.TextUtils.ellipsize(secondary, android.text.TextPaint(widgetSecondaryPaint), available, android.text.TextUtils.TruncateAt.END).toString()
+            canvas.drawText(line,textLeft,box.top+box.height*.77f,widgetSecondaryPaint)
         }
-        return next
     }
 
     private fun drawHint(canvas: Canvas, w: Float, h: Float) {
-        val hint = hintText
-        if (hint.isNullOrEmpty() || hintAlpha <= 0f) return
-        hintPaint.color = withAlpha(colors.secondary, 0.45f * hintAlpha)
-        hintPaint.textSize = ClockTypography.hintTextSize(h)
-        hintPaint.typeface = typefaceFor(theme)
-        canvas.drawText(hint, w / 2f, ClockTypography.hintBaseline(h), hintPaint)
+        val hint=hintText
+        if(hint.isNullOrEmpty()||hintAlpha<=0f)return
+        hintPaint.color=withAlpha(colors.secondary,.35f*hintAlpha); hintPaint.textSize=h*.017f; hintPaint.typeface=typefaceFor(theme)
+        canvas.drawText(hint,w/2f,h*.95f,hintPaint)
+    }
+
+    override fun performClick(): Boolean {
+        super.performClick()
+        return true
     }
 
     private fun typefaceFor(theme: LumaTheme): Typeface =
-        Typeface.create(theme.font.family, theme.font.style)
+        LumaFonts.resolve(context, theme.font)
 
     /**
      * A slow four-position drift, one step per minute. It is a burn-in
@@ -374,7 +362,6 @@ class ClockView @JvmOverloads constructor(
     private fun registerTimeReceiver() {
         if (receiverRegistered) return
         val filter = IntentFilter().apply {
-            addAction(Intent.ACTION_TIME_TICK)
             addAction(Intent.ACTION_TIME_CHANGED)
             addAction(Intent.ACTION_TIMEZONE_CHANGED)
             addAction(Intent.ACTION_DATE_CHANGED)

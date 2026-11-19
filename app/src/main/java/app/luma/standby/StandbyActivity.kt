@@ -1,6 +1,13 @@
 package app.luma.standby
 
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Color
+import android.os.Build
+import android.os.PowerManager
+import androidx.core.content.ContextCompat
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -29,6 +36,9 @@ import app.luma.standby.platform.widgets.WidgetDataCollector
 import app.luma.standby.platform.widgets.WidgetRenderer
 import app.luma.standby.ui.clock.ClockView
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.MutableSharedFlow
+import app.luma.standby.platform.widgets.LumaNotificationListener
 
 /**
  * The in-app standby surface. Works in whatever orientation the phone is held,
@@ -55,6 +65,21 @@ class StandbyActivity : ComponentActivity() {
     private var stopObservingBattery: (() -> Unit)? = null
     private var settings: LumaSettings = LumaSettings()
     private var lastTapAt = 0L
+    private val widgetTicks = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    private var receiverRegistered = false
+    private val screenEvents = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == Intent.ACTION_SCREEN_OFF) {
+                LumaNotificationListener.setCollectionEnabled(false)
+                clockView.setWidgets(emptyList())
+            } else {
+                if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                    applySettings(settings)
+                    refreshWidgets()
+                }
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -67,15 +92,32 @@ class StandbyActivity : ComponentActivity() {
         setTurnScreenOn(true)
         hideSystemBars()
 
-        // Live updates: changing theme/brightness/mode in the app while the clock
-        // is on screen should take effect without relaunching the activity.
-        // STARTED-scoped: a paused clock must not keep applying window brightness.
+        ContextCompat.registerReceiver(this, screenEvents, IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF); addAction(Intent.ACTION_USER_PRESENT)
+            addAction(Intent.ACTION_TIME_CHANGED); addAction(Intent.ACTION_TIMEZONE_CHANGED)
+            addAction(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED)
+        }, ContextCompat.RECEIVER_NOT_EXPORTED)
+        receiverRegistered = true
         lifecycleScope.launch {
-            repeatOnLifecycle(Lifecycle.State.STARTED) {
-                repository.settings.collect { latest ->
-                    settings = latest
-                    applySettings(latest)
-                    refreshWidgets()
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                launch {
+                    repository.settings.collect { latest ->
+                        settings = latest
+                        applySettings(latest)
+                        applyRefreshIntent(baselineState())
+                        refreshWidgets()
+                        widgetTicks.tryEmit(Unit)
+                    }
+                }
+                launch { weatherStore.snapshot.collect { refreshWidgets() } }
+                launch { LumaNotificationListener.changes.collect { refreshWidgets() } }
+                launch {
+                    widgetTicks.collectLatest {
+                        weatherStore.update(
+                            settings.mode != DisplayMode.ULTRA_LOW_POWER && settings.widgetPlacements.any { it.widgetId == "weather" },
+                            settings.weatherLat, settings.weatherLon, settings.weatherCity,
+                        )
+                    }
                 }
             }
         }
@@ -90,6 +132,7 @@ class StandbyActivity : ComponentActivity() {
                 val now = event.eventTime
                 if (now - lastTapAt <= DOUBLE_TAP_WINDOW_MS) {
                     lastTapAt = 0L
+                    clockView.performClick()
                     finish()
                 } else {
                     lastTapAt = now
@@ -102,8 +145,12 @@ class StandbyActivity : ComponentActivity() {
         // only moment we are awake anyway, and it keeps the ramp in step with the
         // minute boundary instead of running its own timer.
         clockView.onTick = {
+            val changedMinute = currentMinuteOfDay() != lastBrightnessMinute
             applyBrightnessIfMinuteChanged()
-            refreshWidgets()
+            if (changedMinute) {
+                refreshWidgets()
+                widgetTicks.tryEmit(Unit)
+            }
         }
 
         stopObservingBattery = batteryController.observe { snapshot ->
@@ -115,11 +162,15 @@ class StandbyActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         hideSystemBars()
+        clockView.resumeTicking()
         enterInteractive()
     }
 
     override fun onPause() {
         mainHandler.removeCallbacks(returnToIdle)
+        clockView.pauseTicking()
+        clockView.setWidgets(emptyList())
+        LumaNotificationListener.setCollectionEnabled(false)
         // The brightness override is window-scoped, but clear it explicitly so a
         // re-shown window never inherits a stale night value.
         brightnessController.restore(window)
@@ -130,6 +181,8 @@ class StandbyActivity : ComponentActivity() {
         mainHandler.removeCallbacks(returnToIdle)
         stopObservingBattery?.invoke()
         stopObservingBattery = null
+        if (receiverRegistered) unregisterReceiver(screenEvents)
+        weatherStore.shutdown()
         super.onDestroy()
     }
 
@@ -140,7 +193,7 @@ class StandbyActivity : ComponentActivity() {
             use24HourOverride = settings.use24Hour,
             // Battery saver silently drops seconds: a per-second redraw is exactly
             // the thing the user asked the platform to stop doing.
-            showSecondsOverride = if (powerController.isPowerSaveMode()) false else settings.showSeconds,
+            showSecondsOverride = if (powerController.isPowerSaveMode() || settings.mode == DisplayMode.ULTRA_LOW_POWER) false else settings.showSeconds,
             burnInShift = settings.burnInShift,
             hint = getString(R.string.exit_standby_hint),
         )
@@ -171,31 +224,20 @@ class StandbyActivity : ComponentActivity() {
      */
     private fun refreshWidgets() {
         val enabled = settings.widgetPlacements.map { it.widgetId }.toSet()
+        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return
         if (enabled.isEmpty()) {
+            LumaNotificationListener.setCollectionEnabled(false)
             clockView.setWidgets(emptyList())
             return
         }
 
-        val weather = if (enabled.contains("weather")) {
-            val lat = settings.weatherLat
-            val lon = settings.weatherLon
-            if (lat != null && lon != null) {
-                val store = weatherStore
-                val cached = store.cached(lat, lon)
-                if (store.isStale() || cached == null) store.refresh(lat, lon, settings.weatherCity)
-                cached
-            } else {
-                null
-            }
-        } else {
-            null
-        }
+        val weather = if (enabled.contains("weather")) weatherStore.cached(settings.weatherLat, settings.weatherLon) else null
 
         val data = widgetCollector.collect(
             enabledIds = enabled,
             weather = weather,
         )
-        clockView.setWidgets(WidgetRenderer.tiles(settings, data))
+        clockView.setWidgets(WidgetRenderer.tiles(settings, data, context = this))
     }
 
     private fun applyBrightnessIfMinuteChanged() {
@@ -237,7 +279,7 @@ class StandbyActivity : ComponentActivity() {
         // HyperOS 4: the layer records 1.00 Hz, but the platform's per-uid rate
         // override stays at 60 Hz. See docs/display-api.md.
         runCatching {
-            clockView.setRequestedFrameRate(intent.targetFps)
+            if (Build.VERSION.SDK_INT >= 35) clockView.setRequestedFrameRate(intent.targetFps)
         }
     }
 

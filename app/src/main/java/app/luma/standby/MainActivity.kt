@@ -2,7 +2,6 @@ package app.luma.standby
 
 import android.content.Intent
 import android.os.Bundle
-import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
@@ -98,11 +97,6 @@ class MainActivity : ComponentActivity() {
                                     onStart = {
                                         runCatching {
                                             startActivity(Intent(this@MainActivity, StandbyActivity::class.java))
-                                        }
-                                    },
-                                    onOpenDreamSettings = {
-                                        runCatching {
-                                            startActivity(Intent(Settings.ACTION_DREAM_SETTINGS))
                                         }
                                     },
                                     onModeChange = { mode ->

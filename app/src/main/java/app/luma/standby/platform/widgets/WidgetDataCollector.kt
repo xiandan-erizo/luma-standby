@@ -1,8 +1,6 @@
 package app.luma.standby.platform.widgets
 
 import android.content.Context
-import app.luma.standby.domain.widget.MediaInfo
-import app.luma.standby.domain.widget.NotificationInfo
 import app.luma.standby.domain.widget.WeatherInfo
 import app.luma.standby.domain.widget.WidgetData
 
@@ -19,6 +17,7 @@ import app.luma.standby.domain.widget.WidgetData
 class WidgetDataCollector(private val context: Context) {
 
     private val systemSource = SystemWidgetSource(context)
+    private val mediaSource = MediaSessionWidgetSource(context)
 
     fun collect(
         enabledIds: Set<String>,
@@ -30,42 +29,28 @@ class WidgetDataCollector(private val context: Context) {
         val needsMedia = enabledIds.contains("media")
         val needsWeather = enabledIds.contains("weather")
 
-        val needsNotificationAccess = needsNotification || needsMedia
-        val hasNotificationAccess = needsNotificationAccess && LumaNotificationListener.isEnabled(context)
-        val notifications: List<NotificationInfo> =
-            if (hasNotificationAccess) LumaNotificationListener.latest(context) else emptyList()
+        val needsSensitiveData = needsNotification || needsMedia
+        val hasAccess = needsSensitiveData && SensitiveWidgetAccess.isUnlocked(context) &&
+            LumaNotificationListener.isEnabled(context)
+        // Media opt-in never enables notification-title collection.
+        LumaNotificationListener.setCollectionEnabled(needsNotification && hasAccess)
+        val notifications = if (needsNotification && hasAccess) {
+            LumaNotificationListener.latest(context)
+        } else emptyList()
+        val media = mediaSource.current(enabled = needsMedia && hasAccess)
 
-        // Media is inferred from notification content: MediaSessionManager needs the
-        // same grant and, on most ROMs, gives no extra certainty for a one-line tile.
-        val media: MediaInfo? = if (needsMedia) mediaFrom(notifications) else null
+        val battery = if (needsBattery) systemSource.battery() else null
+        val nextAlarm = if (needsAlarm) systemSource.nextAlarm() else null
+        val mayPublishSensitive = hasAccess && SensitiveWidgetAccess.isUnlocked(context) &&
+            LumaNotificationListener.isEnabled(context)
+        if (!mayPublishSensitive) LumaNotificationListener.setCollectionEnabled(false)
 
         return WidgetData(
-            battery = if (needsBattery) systemSource.battery() else null,
-            nextAlarm = if (needsAlarm) systemSource.nextAlarm() else null,
+            battery = battery,
+            nextAlarm = nextAlarm,
             weather = if (needsWeather) weather else null,
-            notifications = notifications,
-            media = media,
-        )
-    }
-
-    private fun mediaFrom(notifications: List<NotificationInfo>): MediaInfo? {
-        val music = notifications.firstOrNull { isMusicApp(it.appLabel) } ?: return null
-        return MediaInfo(title = music.title, artist = null, playing = true)
-    }
-
-    private fun isMusicApp(label: String): Boolean {
-        val lower = label.lowercase()
-        return MUSIC_HINTS.any { lower.contains(it) }
-    }
-
-    private companion object {
-        val MUSIC_HINTS = listOf(
-            "music",
-            "spotify",
-            "网易云",
-            "qq音乐",
-            "apple music",
-            "youtube music",
+            notifications = if (mayPublishSensitive) notifications else emptyList(),
+            media = if (mayPublishSensitive) media else null,
         )
     }
 }

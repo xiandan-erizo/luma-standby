@@ -43,8 +43,7 @@ adb shell settings put secure screensaver_enabled 0
 ```
 
 That stops the dream from being started automatically, and the phone returns to a
-normal state. Selecting any third-party dream on this build is likely to hit the
-same bug; it is not specific to Luma as far as the stack shows.
+normal state. The crash was observed while starting Luma through the screen-saver path. Its stack is in system_server, but that alone does not prove all other dreams fail or exclude an app-triggered platform interaction. Other apps were not tested.
 
 ### Follow-up test (2026-11-16 19:03-19:05, approved by the owner)
 
@@ -65,17 +64,14 @@ mDreamsActivatedOnPosturedByDefault=false
 mIsDocked=false
 ```
 
-So on this build the screen-off slot is owned by SystemUI's `MiuiDozeService` (native
-AOD), and third-party dreams are only activated **when docked**, not on charge or
-sleep. The only reachable way to run a third-party dream is the Settings preview,
-which is exactly the path that NPEs.
+The observed current dream was SystemUI's MiuiDozeService. The dump contains default settings, not proof that third-party dreams can only run when docked. Charging-trigger preferences exist, and dock is not equivalent to ordinary wireless charging. These sleep-key tests did not demonstrate Luma starting; explicit screen-off is not the same test as an idle timeout. The earlier universal claim was too strong. Do not use it as a compatibility conclusion.
 
 ### Conclusion
 
 | Path | Result |
 |---|---|
 | Settings → Screen saver preview (app-initiated dream with app task) | system_server NPE, UI restart (twice) |
-| Screen off while charging (system-initiated) | no crash, but no dream: HyperOS keeps the doze slot for MiuiDozeService |
+| Screen off while charging (sleep key experiment) | no crash observed; Luma did not start; not proof of universal blocking |
 | Docked (system-initiated) | not testable without a physical dock; same unknown as above |
 
 Treat third-party DreamService integration as **blocked on HyperOS 4** until Xiaomi
@@ -87,3 +83,6 @@ surface is unaffected.
 
 Do not advertise "works as a screen saver on HyperOS 4" yet. In-app standby
 (`StandbyActivity`) is unaffected: it never touches the dream path.
+## 2026-11-19 development boundary
+
+DreamService remains unregistered and its preview shortcut was removed. No new dream/dock/AOD experiment was performed. The visual refresh fixes an API-35 View.setRequestedFrameRate call lacking a minSdk-31 guard. Display-rate and brightness observations remain system-reported snapshots, not panel-state or nits measurements; earlier 60 Hz and 0.10-cap observations cannot establish permanent OEM-wide limits.

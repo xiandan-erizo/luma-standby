@@ -7,4 +7,6 @@ data class WeatherInfo(
     val updatedAtMillis: Long,
     /** Coordinates the reading was fetched for, so a city change invalidates it. */
     val locationKey: String? = null,
+    /** Last known reading: render a stale label; readings older than 24h are hidden. */
+    val isStale: Boolean = false,
 )

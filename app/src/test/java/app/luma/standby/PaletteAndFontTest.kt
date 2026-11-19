@@ -48,7 +48,7 @@ class PaletteAndFontTest {
         val theme = ThemeEditing.withFont(settings, FontChoice.CONDENSED, 22L)
 
         assertEquals(FontChoice.CONDENSED, theme.font)
-        assertEquals("#31596B", theme.background)
+        assertEquals(ThemePresets.atlanticRose.background, theme.background)
         assertFalse(theme.builtIn)
         assertEquals("custom-22", theme.id)
     }

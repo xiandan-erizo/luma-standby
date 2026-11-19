@@ -11,7 +11,7 @@
 
     <string name="start_standby">啟動待機</string>
     <string name="open_dream_settings">系統螢幕保護設定</string>
-    <string name="preview_note">時鐘每分鐘只重繪一次，兩次重繪之間不執行任何東西。</string>
+    <string name="preview_note">時鐘按分鐘更新，小工具隨資料變化更新。只有放置天氣並選擇城市後才連線。</string>
 
     <string name="mode_standard">標準</string>
     <string name="mode_ultra">極省電</string>
@@ -150,4 +150,35 @@
     <string name="widgets_weather_clear">清除</string>
     <string name="widgets_weather_saved">天氣位置已儲存</string>
     <string name="widgets_weather_note">資料來自 Open-Meteo，無需帳號或金鑰。僅在放置天氣小工具時更新，最多每 30 分鐘一次。</string>
+    <string name="widget_battery">電量</string>
+    <string name="widget_weather">天氣</string>
+    <string name="widget_alarm">下次鬧鐘</string>
+    <string name="widget_media">正在播放</string>
+    <string name="widget_notification">最新通知</string>
+    <string name="widget_charging">充電中</string>
+    <string name="weather_clear">晴</string>
+    <string name="weather_partly_cloudy">晴间多云</string>
+    <string name="weather_cloudy">陰</string>
+    <string name="weather_rain">雨</string>
+    <string name="weather_snow">雪</string>
+    <string name="weather_thunder">雷雨</string>
+    <string name="weather_fog">霧</string>
+    <string name="weather_cached">快取</string>
+    <string name="widgets_privacy_note">通知存取權可選。標題僅保存在記憶體中；非公開通知只顯示應用程式名稱，鎖定後隱藏通知與媒體內容。</string>
+    <string name="font_condensed">窄體</string>
+    <string name="font_light">纖細</string>
+    <string name="standby_subtitle">漂亮、安靜的桌面時鐘</string>
+    <string name="widgets_preview_heading">預覽</string>
+    <string name="widgets_preview_empty">暫無可預覽的本機資料</string>
+    <string name="widgets_slot_full">位置已滿</string>
+    <string name="widgets_weather_custom">自訂位置</string>
+    <string name="widgets_weather_invalid">請輸入有效緯度（-90～90）和經度（-180～180）</string>
+    <string name="widgets_weather_current">目前：%1$s</string>
+    <string name="city_beijing">北京</string>
+    <string name="city_shanghai">上海</string>
+    <string name="city_guangzhou">廣州</string>
+    <string name="city_shenzhen">深圳</string>
+    <string name="city_chengdu">成都</string>
+    <string name="city_hangzhou">杭州</string>
+    <string name="font_display">高瘦大字</string>
 </resources>

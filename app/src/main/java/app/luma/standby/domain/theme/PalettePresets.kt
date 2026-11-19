@@ -16,10 +16,10 @@ object PalettePresets {
         LumaTheme(
             id = "palette-ocean-rose",
             name = "Ocean Rose",
-            background = "#31596B",
-            primary = "#F4C9D5",
-            secondary = "#E8E9E7",
-            accent = "#E9A8C0",
+            background = "#25596A",
+            primary = "#FFCAD9",
+            secondary = "#F9D9E3",
+            accent = "#FFF1F4",
             font = FontChoice.ROUNDED,
         ),
         LumaTheme(
