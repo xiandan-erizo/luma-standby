@@ -49,10 +49,14 @@ android {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
     }
 
-    // Robolectric downloads its Android-all jars; the sandbox cannot write the
-    // default ~/.robolectric-download-lock, so keep them inside the build dir.
+    // Robolectric resolves its Android-all jar itself (official Maven Central URLs via
+    // its own repository config). Pointing it at a local directory makes it skip the
+    // download and fail on a clean CI checkout, so only the lock/home location is
+    // redirected - that is the part a sandboxed machine cannot write.
     tasks.withType<Test>().configureEach {
-        systemProperty("robolectric.dependency.dir", layout.buildDirectory.dir("robolectric").get().asFile.absolutePath)
+        val robolectricHome = layout.buildDirectory.dir("robolectric-home").get().asFile
+        doFirst { robolectricHome.mkdirs() }
+        systemProperty("user.home", robolectricHome.absolutePath)
     }
 
     testOptions {
