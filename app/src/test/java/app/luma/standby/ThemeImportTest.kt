@@ -70,14 +70,14 @@ class ThemeImportTest {
     fun exportedPresetRoundTripsThroughImport() {
         val json = """
             {
-              "id": "atlantic-rose",
-              "name": "Atlantic Rose",
-              "background": "#25596A",
-              "primary": "#FFCAD9",
-              "secondary": "#F9D9E3",
-              "accent": "#FFF1F4",
+              "id": "dusk-teal",
+              "name": "Dusk Teal",
+              "background": "#2A4A52",
+              "primary": "#E8C9B8",
+              "secondary": "#9DB4B0",
+              "accent": "#D9A97F",
               "gradient": false,
-              "gradientEnd": "#25596A",
+              "gradientEnd": "#2A4A52",
               "font": "DISPLAY",
               "showSeconds": false,
               "brightnessProfile": "STANDARD",
@@ -87,7 +87,7 @@ class ThemeImportTest {
         val result = ThemeImport.parse(json)
         assertTrue(result is ThemeImport.Result.Ok)
         val theme = (result as ThemeImport.Result.Ok).theme
-        assertEquals(ThemePresets.atlanticRose.background, theme.background)
-        assertEquals(ThemePresets.atlanticRose.font, theme.font)
+        assertEquals(ThemePresets.duskTeal.background, theme.background)
+        assertEquals(ThemePresets.duskTeal.font, theme.font)
     }
 }

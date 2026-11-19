@@ -36,7 +36,7 @@ class ThemeJsonTest {
 
     @Test
     fun roundTripPreservesTheme() {
-        val original = ThemePresets.burgundy
+        val original = ThemePresets.wineSlate
         val encoded = json.encodeToString(LumaTheme.serializer(), original)
         val decoded = json.decodeFromString(LumaTheme.serializer(), encoded)
         assertEquals(original, decoded)
@@ -64,6 +64,6 @@ class ThemeJsonTest {
 
     @Test
     fun findByIdFallsBackToDefault() {
-        assertEquals("atlantic-rose", ThemePresets.findById("does-not-exist").id)
+        assertEquals(ThemePresets.DEFAULT_ID, ThemePresets.findById("does-not-exist").id)
     }
 }

@@ -10,14 +10,14 @@
 
 ```json
 {
-  "id": "atlantic-rose",
+  "id": "dusk-teal",
   "name": "Atlantic Rose",
-  "background": "#25596A",
-  "primary": "#FFCAD9",
+  "background": "#2A4A52",
+  "primary": "#E8C9B8",
   "secondary": "#E8E9E7",
   "accent": "#E9A8C0",
   "gradient": false,
-  "gradientEnd": "#25596A",
+  "gradientEnd": "#2A4A52",
   "font": "DISPLAY",
   "showSeconds": false,
   "brightnessProfile": "STANDARD",
@@ -33,7 +33,7 @@ hand-written file still loads.
 
 | id | Background | Primary | Intent |
 |---|---|---|---|
-| `atlantic-rose` | #25596A | #FFCAD9 | default, ocean + sakura |
+| `dusk-teal` | #2A4A52 | #E8C9B8 | default, desaturated teal + warm sand |
 | `midnight-lavender` | #24283B | #D9CDED | quiet, techy |
 | `forest-mist` | #354A40 | #E8E1CE | natural, warm |
 | `burgundy` | #492E3B | #F0CDD2 | vintage, textured |
@@ -51,7 +51,7 @@ brick the clock. Alpha is applied only for the exit hint
 
 ## Typography
 
-DISPLAY is bundled Anton under SIL OFL 1.1, not a system family alias. Shared tabular cells preserve narrow digits, circular colon dots and a tall silhouette. Six system alternatives remain. Labels use sans-serif medium. The license is shipped in the APK and [ANTON-OFL](ANTON-OFL.txt). This approximates the reference, not Apple's proprietary font.
+DISPLAY is bundled Oswald (variable, requested at weight 700) under SIL OFL 1.1, not a system family alias. It was chosen over Anton after a side-by-side render: Oswald keeps rounder transitions, a wider bowl on 9/6, and an authentic angled head on 1, which is what the reference look actually depends on. Shared tabular cells preserve narrow digits, circular colon dots and the tall silhouette. Six system alternatives remain. The license ships in the APK and in [OSWALD-OFL](OSWALD-OFL.txt). This approximates the reference, not Apple's proprietary font.
 
 ## Gradient
 
@@ -64,11 +64,11 @@ more pixels than solid black. Keep gradients for Showcase.
 Colour and typography are separate choices, the way the reference UI splits
 `颜色 / 字体`:
 
-* **12 palettes** live in `PalettePresets`: Ocean Rose, Midnight Lavender, Forest
+* **18 palettes** live in `PalettePresets`, in three groups (coloured dark, near-black
   Mist, Burgundy, Black Amber, Sage Ink, Ink Cream, Slate Blue, Terracotta, Plum
   Noir, Sand, Arctic. Two of them (Sage Ink, Arctic) are light surfaces with dark
   digits, which the old five-theme set had none of.
-* **7 typefaces** live in `FontChoice`: DISPLAY (Anton), Rounded, Condensed (bold
+* **7 typefaces** live in `FontChoice`: DISPLAY (Oswald 700), Rounded, Condensed (bold
   `sans-serif-condensed`, the tall narrow digits from the reference), Sans, Serif,
   Mono, Light.
 * Picking a palette keeps the current font; picking a typeface keeps the current

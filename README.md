@@ -22,7 +22,7 @@ What is implemented in this tree:
 | Gradle project, Compose settings UI, custom Canvas clock | done |
 | Five PRD themes + JSON serialisation | done |
 | Five selectable tiles: battery, weather, alarm, media, notifications (calendar deferred) | see [widgets](docs/widgets.md) |
-| 12 curated palettes + 7 typefaces (bundled DISPLAY + 6 system choices), colour and font chosen independently | done |
+| 18 curated palettes in 3 groups (coloured dark / near-black / light) + 7 typefaces (bundled Oswald 700 + 6 system), colour and font chosen independently | done |
 | Theme editor (duplicate → edit colours/font/gradient → save/delete) and JSON export/import via clipboard | done |
 | Device diagnostics page (API level, HyperOS, display modes, ARR, refresh rates, battery, thermal, dream registration) | done |
 | Minute-boundary redraw scheduler (+ time/timezone/date change receivers) | done |
@@ -56,7 +56,7 @@ What this tree can **not** promise, by design:
 
 ## Current visual refresh (2026-11-19)
 
-Default blue/pink (#25596A / #FFCAD9), a real bundled tall display font, fixed digit cells, hand-drawn status icons and separate clock/information regions. [Design notes](docs/visual-refresh.md). The source does not redistribute Apple's font.
+Default Dusk Teal (#2A4A52 / #E8C9B8) out of 18 low-chroma palettes, a bundled Oswald 700 display face, fixed digit cells, hand-drawn status icons and separate clock/information regions. [Design notes](docs/visual-refresh.md). The source does not redistribute Apple's font.
 
 Weather cache/IO is visible-lifecycle scoped and throttled. Notifications are sanitized in memory and hidden when locked; media comes from real playing sessions, never application-name guesses. Six offline city presets replace mandatory manual coordinate entry. No DreamService experiments.
 
@@ -170,4 +170,4 @@ scripts/                       bootstrap/build, device smoke test, power suite,
 
 ## License
 
-Apache-2.0. Anton is bundled under SIL OFL 1.1. The complete font license is shipped inside the APK and in [ANTON-OFL](docs/ANTON-OFL.txt).
+Apache-2.0. Oswald is bundled under SIL OFL 1.1. The complete font license is shipped inside the APK and in [OSWALD-OFL](docs/OSWALD-OFL.txt).

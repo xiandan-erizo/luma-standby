@@ -13,17 +13,17 @@ class ThemeEditingTest {
 
     @Test
     fun duplicateCreatesEditableCustomCopy() {
-        val copy = ThemeEditing.duplicate(ThemePresets.midnightLavender, 42L)
+        val copy = ThemeEditing.duplicate(ThemePresets.indigoMist, 42L)
         assertEquals("custom-42", copy.id)
         assertFalse(copy.builtIn)
-        assertTrue(copy.name.contains("Midnight Lavender"))
-        assertEquals(ThemePresets.midnightLavender.background, copy.background)
+        assertTrue(copy.name.contains(ThemePresets.indigoMist.name))
+        assertEquals(ThemePresets.indigoMist.background, copy.background)
         assertTrue(ThemeEditing.isCustom(copy))
     }
 
     @Test
     fun upsertInsertsSelectsAndReplaces() {
-        val first = ThemeEditing.duplicate(ThemePresets.forestMist, 7L)
+        val first = ThemeEditing.duplicate(ThemePresets.oliveClay, 7L)
         val afterInsert = ThemeEditing.upsert(LumaSettings(), first)
         assertEquals(first.id, afterInsert.themeId)
         assertEquals(1, afterInsert.customThemes.size)
@@ -36,7 +36,7 @@ class ThemeEditingTest {
 
     @Test
     fun removingSelectedCustomThemeFallsBackToDefault() {
-        val custom = ThemeEditing.duplicate(ThemePresets.burgundy, 9L)
+        val custom = ThemeEditing.duplicate(ThemePresets.wineSlate, 9L)
         val withCustom = ThemeEditing.upsert(LumaSettings(), custom)
         val afterRemove = ThemeEditing.remove(withCustom, custom.id)
         assertEquals(ThemePresets.DEFAULT_ID, afterRemove.themeId)
@@ -45,7 +45,7 @@ class ThemeEditingTest {
 
     @Test
     fun builtInThemesAreNotEditableAsCustom() {
-        assertFalse(ThemeEditing.isCustom(ThemePresets.burgundy))
+        assertFalse(ThemeEditing.isCustom(ThemePresets.wineSlate))
     }
 
     @Test
@@ -59,7 +59,7 @@ class ThemeEditingTest {
 
     @Test
     fun validateAllReportsEveryBrokenField() {
-        val broken = ThemePresets.atlanticRose.copy(
+        val broken = ThemePresets.duskTeal.copy(
             name = " ",
             background = "nope",
             primary = "#12345",

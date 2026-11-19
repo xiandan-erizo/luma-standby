@@ -59,7 +59,7 @@ class ClockView @JvmOverloads constructor(
     }
     private val backgroundPaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
-    private var theme: LumaTheme = ThemePresets.atlanticRose
+    private var theme: LumaTheme = ThemePresets.duskTeal
     private var colors: ResolvedColors = theme.resolveColors()
     private var use24Hour: Boolean = false
     private var use24HourOverride: Boolean? = null

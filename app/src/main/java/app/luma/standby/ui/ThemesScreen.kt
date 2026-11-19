@@ -160,7 +160,9 @@ fun ThemesScreen(
 
         if (tab == ThemeTab.COLORS.ordinal) {
             item {
-                val rows = PalettePresets.all.chunked(3)
+                // Grouped like the reference sheet: dark surfaces, OLED near-black,
+                // then light. Twelve swatches in one flat grid was unreadable.
+                val rows = PalettePresets.all.chunked(6)
                 Column(modifier = Modifier.padding(top = 4.dp)) {
                     rows.forEach { row ->
                         Row(

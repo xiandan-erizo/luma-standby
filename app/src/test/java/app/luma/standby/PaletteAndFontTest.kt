@@ -29,14 +29,14 @@ class PaletteAndFontTest {
 
     @Test
     fun paletteKeepsTheCurrentFontAndForksToCustom() {
-        val settings = LumaSettings(themeId = "black-amber")
-        val target = PalettePresets.findById("palette-sage-ink")!!
+        val settings = LumaSettings(themeId = "obsidian-amber")
+        val target = PalettePresets.findById("pale-sage")!!
         val theme = ThemeEditing.withPalette(settings, target, 11L)
 
-        assertEquals("#A8B9A1", theme.background)
-        assertEquals("#10140F", theme.primary)
+        assertEquals(PalettePresets.paleSage.background, theme.background)
+        assertEquals(PalettePresets.paleSage.primary, theme.primary)
         // black-amber uses ROUNDED; the palette must not change it
-        assertEquals(ThemePresets.blackAmber.font, theme.font)
+        assertEquals(ThemePresets.obsidianAmber.font, theme.font)
         assertFalse(theme.builtIn)
         assertTrue(ThemeEditing.isCustom(theme))
         assertEquals("custom-11", theme.id)
@@ -44,18 +44,18 @@ class PaletteAndFontTest {
 
     @Test
     fun fontOnBuiltInThemeForksOnce() {
-        val settings = LumaSettings(themeId = "atlantic-rose")
+        val settings = LumaSettings(themeId = "dusk-teal")
         val theme = ThemeEditing.withFont(settings, FontChoice.CONDENSED, 22L)
 
         assertEquals(FontChoice.CONDENSED, theme.font)
-        assertEquals(ThemePresets.atlanticRose.background, theme.background)
+        assertEquals(ThemePresets.duskTeal.background, theme.background)
         assertFalse(theme.builtIn)
         assertEquals("custom-22", theme.id)
     }
 
     @Test
     fun fontOnCustomThemeKeepsItsId() {
-        val custom = ThemeEditing.duplicate(ThemePresets.burgundy, 33L)
+        val custom = ThemeEditing.duplicate(ThemePresets.wineSlate, 33L)
         val settings = LumaSettings(themeId = custom.id, customThemes = listOf(custom))
         val theme = ThemeEditing.withFont(settings, FontChoice.LIGHT, 99L)
 

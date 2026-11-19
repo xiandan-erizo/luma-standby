@@ -16,7 +16,7 @@ enum class FontChoice(
     val family: String,
     val style: Int = 0,
 ) {
-    DISPLAY("Display", "anton", 0),
+    DISPLAY("Display", "oswald", 1),
     ROUNDED("Rounded", "sans-serif-rounded", 0),
     CONDENSED("Condensed", "sans-serif-condensed", 1),
     SANS("Sans", "sans-serif", 0),

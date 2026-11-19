@@ -74,6 +74,9 @@ fun ThemeEditorDialog(
                     modifier = Modifier.padding(top = 12.dp),
                 )
                 Row {
+                    FontChip(FontChoice.DISPLAY, draft.font, R.string.font_display) {
+                        draft = draft.copy(font = it)
+                    }
                     FontChip(FontChoice.ROUNDED, draft.font, R.string.font_rounded) {
                         draft = draft.copy(font = it)
                     }
