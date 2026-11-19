@@ -24,6 +24,9 @@ import app.luma.standby.platform.display.DisplayController
 import app.luma.standby.platform.display.RefreshRatePolicy
 import app.luma.standby.platform.display.RefreshState
 import app.luma.standby.platform.power.PowerController
+import app.luma.standby.platform.widgets.WeatherStore
+import app.luma.standby.platform.widgets.WidgetDataCollector
+import app.luma.standby.platform.widgets.WidgetRenderer
 import app.luma.standby.ui.clock.ClockView
 import kotlinx.coroutines.launch
 
@@ -43,6 +46,8 @@ class StandbyActivity : ComponentActivity() {
     private val batteryController by lazy { BatteryController(this) }
     private val powerController by lazy { PowerController(this) }
     private val brightnessController by lazy { BrightnessController(this) }
+    private val widgetCollector by lazy { WidgetDataCollector(this) }
+    private val weatherStore by lazy { WeatherStore(this) }
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val returnToIdle = Runnable { applyRefreshIntent(baselineState()) }
@@ -70,6 +75,7 @@ class StandbyActivity : ComponentActivity() {
                 repository.settings.collect { latest ->
                     settings = latest
                     applySettings(latest)
+                    refreshWidgets()
                 }
             }
         }
@@ -95,7 +101,10 @@ class StandbyActivity : ComponentActivity() {
         // Re-evaluate the night window exactly when the clock redraws: that is the
         // only moment we are awake anyway, and it keeps the ramp in step with the
         // minute boundary instead of running its own timer.
-        clockView.onTick = { applyBrightnessIfMinuteChanged() }
+        clockView.onTick = {
+            applyBrightnessIfMinuteChanged()
+            refreshWidgets()
+        }
 
         stopObservingBattery = batteryController.observe { snapshot ->
             setKeepScreenOn(snapshot.charging)
@@ -153,6 +162,40 @@ class StandbyActivity : ComponentActivity() {
         val thermalFactor = if (powerController.shouldDim()) 0.6f else 1f
         val target = if (requested < 0f) -1f else (requested * thermalFactor).coerceIn(0.01f, 1f)
         brightnessController.apply(window, target)
+    }
+
+    /**
+     * Widget data is recomputed once per redraw, on the same minute boundary as the
+     * clock. Notification access is the only expensive read and only happens when a
+     * widget actually needs it.
+     */
+    private fun refreshWidgets() {
+        val enabled = settings.widgetPlacements.map { it.widgetId }.toSet()
+        if (enabled.isEmpty()) {
+            clockView.setWidgets(emptyList())
+            return
+        }
+
+        val weather = if (enabled.contains("weather")) {
+            val lat = settings.weatherLat
+            val lon = settings.weatherLon
+            if (lat != null && lon != null) {
+                val store = weatherStore
+                val cached = store.cached(lat, lon)
+                if (store.isStale() || cached == null) store.refresh(lat, lon, settings.weatherCity)
+                cached
+            } else {
+                null
+            }
+        } else {
+            null
+        }
+
+        val data = widgetCollector.collect(
+            enabledIds = enabled,
+            weather = weather,
+        )
+        clockView.setWidgets(WidgetRenderer.tiles(settings, data))
     }
 
     private fun applyBrightnessIfMinuteChanged() {

@@ -9,6 +9,9 @@ import kotlinx.serialization.Serializable
  * The night window is stored as minutes-of-day so it survives serialisation
  * without locale or timezone assumptions; the ramp is the number of minutes used
  * to fade in/out around each boundary.
+ *
+ * Widgets are stored as (widgetId, slot) pairs instead of domain objects so this
+ * file stays free of UI concepts and an older settings file still decodes.
  */
 @Serializable
 data class LumaSettings(
@@ -24,4 +27,11 @@ data class LumaSettings(
     val nightRampMinutes: Int = 45,
     val burnInShift: Boolean = true,
     val customThemes: List<LumaTheme> = emptyList(),
+    val widgetPlacements: List<StoredPlacement> = emptyList(),
+    val weatherCity: String? = null,
+    val weatherLat: Double? = null,
+    val weatherLon: Double? = null,
 )
+
+@Serializable
+data class StoredPlacement(val widgetId: String, val slot: String)

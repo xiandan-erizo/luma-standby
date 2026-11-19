@@ -130,4 +130,24 @@
     <string name="themes_exported_file">主題已匯出</string>
     <string name="themes_export_failed">匯出失敗</string>
     <string name="themes_import_failed">匯入失敗：%1$s</string>
+
+    <string name="tab_widgets">小工具</string>
+    <string name="widgets_intro">小工具固定在螢幕角落，讓時鐘保持視覺中心。沒有放置的小工具不會蒐集任何資料。</string>
+    <string name="widgets_off">關閉</string>
+    <string name="widget_slot_top_right">右上</string>
+    <string name="widget_slot_bottom_right">右下</string>
+    <string name="widget_slot_bottom_left">左下</string>
+    <string name="widget_permission_notification">需要通知存取權</string>
+    <string name="widget_permission_granted">已授予通知存取權</string>
+    <string name="widget_permission_calendar">需要行事曆權限（尚未接入）</string>
+    <string name="widget_permission_location">需要定位</string>
+    <string name="widget_permission_open">去授權</string>
+    <string name="widgets_weather_heading">天氣</string>
+    <string name="widgets_weather_city">城市名稱</string>
+    <string name="widgets_weather_lat">緯度</string>
+    <string name="widgets_weather_lon">經度</string>
+    <string name="widgets_weather_apply">儲存</string>
+    <string name="widgets_weather_clear">清除</string>
+    <string name="widgets_weather_saved">天氣位置已儲存</string>
+    <string name="widgets_weather_note">資料來自 Open-Meteo，無需帳號或金鑰。僅在放置天氣小工具時更新，最多每 30 分鐘一次。</string>
 </resources>

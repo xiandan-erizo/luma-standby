@@ -130,4 +130,24 @@
     <string name="themes_exported_file">主题已导出</string>
     <string name="themes_export_failed">导出失败</string>
     <string name="themes_import_failed">导入失败：%1$s</string>
+
+    <string name="tab_widgets">小组件</string>
+    <string name="widgets_intro">小组件固定在屏幕角落，让时钟保持视觉中心。没有放置的小组件不会采集任何数据。</string>
+    <string name="widgets_off">关闭</string>
+    <string name="widget_slot_top_right">右上</string>
+    <string name="widget_slot_bottom_right">右下</string>
+    <string name="widget_slot_bottom_left">左下</string>
+    <string name="widget_permission_notification">需要通知使用权</string>
+    <string name="widget_permission_granted">已授予通知使用权</string>
+    <string name="widget_permission_calendar">需要日历权限（尚未接入）</string>
+    <string name="widget_permission_location">需要定位</string>
+    <string name="widget_permission_open">去授权</string>
+    <string name="widgets_weather_heading">天气</string>
+    <string name="widgets_weather_city">城市名称</string>
+    <string name="widgets_weather_lat">纬度</string>
+    <string name="widgets_weather_lon">经度</string>
+    <string name="widgets_weather_apply">保存</string>
+    <string name="widgets_weather_clear">清除</string>
+    <string name="widgets_weather_saved">天气位置已保存</string>
+    <string name="widgets_weather_note">数据来自 Open-Meteo，无需账号或密钥。仅在放置天气小组件时更新，最多每 30 分钟一次。</string>
 </resources>

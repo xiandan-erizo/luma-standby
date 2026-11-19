@@ -130,4 +130,24 @@
     <string name="themes_exported_file">Theme exported</string>
     <string name="themes_export_failed">Export failed</string>
     <string name="themes_import_failed">Import failed: %1$s</string>
+
+    <string name="tab_widgets">Widgets</string>
+    <string name="widgets_intro">Widgets sit in the corners so the clock keeps the centre of the screen. Nothing is collected unless a widget is placed.</string>
+    <string name="widgets_off">Off</string>
+    <string name="widget_slot_top_right">Top right</string>
+    <string name="widget_slot_bottom_right">Bottom right</string>
+    <string name="widget_slot_bottom_left">Bottom left</string>
+    <string name="widget_permission_notification">Needs notification access</string>
+    <string name="widget_permission_granted">Notification access granted</string>
+    <string name="widget_permission_calendar">Needs calendar permission (not wired yet)</string>
+    <string name="widget_permission_location">Needs location</string>
+    <string name="widget_permission_open">Grant</string>
+    <string name="widgets_weather_heading">Weather</string>
+    <string name="widgets_weather_city">City name</string>
+    <string name="widgets_weather_lat">Latitude</string>
+    <string name="widgets_weather_lon">Longitude</string>
+    <string name="widgets_weather_apply">Save</string>
+    <string name="widgets_weather_clear">Clear</string>
+    <string name="widgets_weather_saved">Weather location saved</string>
+    <string name="widgets_weather_note">Open-Meteo, no account or key. Refreshed at most every 30 minutes, only while the weather widget is placed.</string>
 </resources>

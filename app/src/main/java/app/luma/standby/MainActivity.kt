@@ -42,6 +42,7 @@ import app.luma.standby.ui.DiagnosticsScreen
 import app.luma.standby.ui.LumaAppTheme
 import app.luma.standby.ui.PreviewScreen
 import app.luma.standby.ui.ThemesScreen
+import app.luma.standby.ui.WidgetsScreen
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -71,7 +72,7 @@ class MainActivity : ComponentActivity() {
                 }
 
                 LaunchedEffect(tab) {
-                    if (tab == 2) report = diagnostics.report()
+                    if (tab == 3) report = diagnostics.report()
                 }
 
                 Surface(
@@ -87,7 +88,8 @@ class MainActivity : ComponentActivity() {
                         TabRow(selectedTabIndex = tab) {
                             TabLabel(stringResource(R.string.tab_preview), tab == 0) { tab = 0 }
                             TabLabel(stringResource(R.string.tab_themes), tab == 1) { tab = 1 }
-                            TabLabel(stringResource(R.string.tab_diagnostics), tab == 2) { tab = 2 }
+                            TabLabel(stringResource(R.string.tab_widgets), tab == 2) { tab = 2 }
+                            TabLabel(stringResource(R.string.tab_diagnostics), tab == 3) { tab = 3 }
                         }
                         Box(Modifier.fillMaxSize()) {
                             when (tab) {
@@ -124,6 +126,13 @@ class MainActivity : ComponentActivity() {
                                         }
                                     },
                                     encodeTheme = { theme -> repository.exportTheme(theme) },
+                                )
+
+                                2 -> WidgetsScreen(
+                                    settings = settings,
+                                    onChange = { transform ->
+                                        scope.launch { repository.update(transform) }
+                                    },
                                 )
 
                                 else -> DiagnosticsScreen(

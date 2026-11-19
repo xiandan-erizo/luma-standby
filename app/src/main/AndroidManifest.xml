@@ -2,15 +2,23 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!--
-      v0.1 requests no runtime permissions at all.
-      INTERNET / READ_CALENDAR / notification access are deferred to Phase 4
-      and must stay opt-in when they land.
+      Permissions are opt-in and small on purpose.
+
+      INTERNET is only used by the weather widget, and only while that widget is
+      placed. The notification listener is declared but the OS will not start it
+      until the user grants notification access in Settings; the app never asks for
+      that at first launch.
+
+      v0.1 still requests nothing at install time: all of the above are normal or
+      signature permissions, not runtime prompts.
     -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:allowBackup="true"
         android:icon="@drawable/ic_launcher"
         android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:roundIcon="@drawable/ic_launcher"
         android:supportsRtl="true"
         android:theme="@style/Theme.LumaStandby">
@@ -36,6 +44,20 @@
             android:showWhenLocked="true"
             android:theme="@style/Theme.LumaStandby.Standby"
             android:turnScreenOn="true" />
+
+        <!--
+          Optional: only runs after the user grants notification access. Powers the
+          "latest notification" and "now playing" widgets.
+        -->
+        <service
+            android:name=".platform.widgets.LumaNotificationListener"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
 
         <!--
           DreamService is intentionally NOT registered on HyperOS 4 builds: the

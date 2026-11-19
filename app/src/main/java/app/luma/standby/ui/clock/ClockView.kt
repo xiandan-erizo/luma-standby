@@ -17,6 +17,8 @@ import android.util.AttributeSet
 import android.view.View
 import androidx.core.content.ContextCompat
 import app.luma.standby.domain.BurnInDrift
+import app.luma.standby.domain.widget.WidgetGlyph
+import app.luma.standby.domain.widget.WidgetSlot
 import app.luma.standby.domain.model.LumaTheme
 import app.luma.standby.domain.model.ResolvedColors
 import app.luma.standby.domain.model.resolveColors
@@ -64,6 +66,19 @@ class ClockView @JvmOverloads constructor(
     private var burnInDrift: Boolean = true
     private var hintText: String? = null
     private var hintAlpha: Float = 0f
+
+    /** Widget tiles, already computed by the caller: layout here is pure drawing. */
+    private var widgetTiles: List<WidgetTile> = emptyList()
+    private val widgetPrimaryPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textAlign = Paint.Align.RIGHT
+        isSubpixelText = true
+        fontFeatureSettings = "tnum"
+    }
+    private val widgetSecondaryPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textAlign = Paint.Align.RIGHT
+        isSubpixelText = true
+        fontFeatureSettings = "tnum"
+    }
 
     private val density = resources.displayMetrics.density
 
@@ -126,6 +141,13 @@ class ClockView @JvmOverloads constructor(
         hintHandler.postDelayed(hideHint, HINT_VISIBLE_MS)
     }
 
+    /** Replace the widget tiles; callers compute content off the redraw path. */
+    fun setWidgets(tiles: List<WidgetTile>) {
+        val changed = tiles != widgetTiles
+        widgetTiles = tiles
+        if (changed) invalidate()
+    }
+
     fun resumeTicking() {
         scheduler.start()
     }
@@ -183,6 +205,7 @@ class ClockView @JvmOverloads constructor(
 
         drawTime(canvas, w, h, timeText, suffix)
         drawDate(canvas, w, h)
+        drawWidgets(canvas, w, h)
         drawHint(canvas, w, h)
 
         canvas.restore()
@@ -263,6 +286,54 @@ class ClockView @JvmOverloads constructor(
         datePaint.textSize = size
         val baseline = ClockTypography.dateBaseline(h, ClockTypography.isPortrait(w, h))
         canvas.drawText(text, w / 2f, baseline, datePaint)
+    }
+
+    /**
+     * Widgets occupy the two right-hand corners so the clock keeps the visual
+     * centre of the screen. Text is right-aligned against a shared margin, which
+     * makes a column of tiles read as one block rather than a scatter.
+     */
+    private fun drawWidgets(canvas: Canvas, w: Float, h: Float) {
+        if (widgetTiles.isEmpty()) return
+        val typeface = typefaceFor(theme)
+        val margin = w * 0.055f
+        val lineGap = h * 0.028f
+
+        widgetPrimaryPaint.typeface = typeface
+        widgetPrimaryPaint.color = colors.primary
+        widgetPrimaryPaint.textSize = h * 0.034f
+        widgetSecondaryPaint.typeface = typeface
+        widgetSecondaryPaint.color = withAlpha(colors.secondary, 0.72f)
+        widgetSecondaryPaint.textSize = h * 0.020f
+
+        val top = widgetTiles.filter { it.slot == WidgetSlot.TOP_RIGHT }
+        val bottom = widgetTiles.filter { it.slot == WidgetSlot.BOTTOM_RIGHT }
+
+        var y = h * 0.085f
+        top.forEach { tile ->
+            y = drawTile(canvas, tile, w - margin, y, lineGap)
+            y += lineGap
+        }
+
+        var bottomY = h * 0.925f
+        bottom.asReversed().forEach { tile ->
+            bottomY -= (h * 0.020f + if (tile.content.secondary == null) 0f else h * 0.020f)
+            drawTile(canvas, tile, w - margin, bottomY, lineGap)
+            bottomY -= lineGap * 0.5f
+        }
+    }
+
+    private fun drawTile(canvas: Canvas, tile: WidgetTile, right: Float, baseline: Float, gap: Float): Float {
+        val content = tile.content
+        val glyphWidth = if (content.glyph == WidgetGlyph.NONE) 0f else widgetSecondaryPaint.textSize * 1.1f
+        canvas.drawText(content.primary, right - glyphWidth, baseline, widgetPrimaryPaint)
+        var next = baseline
+        val secondary = content.secondary
+        if (secondary != null) {
+            next = baseline + gap
+            canvas.drawText(secondary, right, next, widgetSecondaryPaint)
+        }
+        return next
     }
 
     private fun drawHint(canvas: Canvas, w: Float, h: Float) {

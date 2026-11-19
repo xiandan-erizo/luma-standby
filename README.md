@@ -21,6 +21,7 @@ What is implemented in this tree:
 |---|---|
 | Gradle project, Compose settings UI, custom Canvas clock | done |
 | Five PRD themes + JSON serialisation | done |
+| Widget contract + 6 widgets (battery, weather, alarm, calendar, media, notification) with slot placement | done, see `docs/widgets.md` |
 | 12 curated palettes + 6 typefaces, colour and font chosen independently | done |
 | Theme editor (duplicate → edit colours/font/gradient → save/delete) and JSON export/import via clipboard | done |
 | Device diagnostics page (API level, HyperOS, display modes, ARR, refresh rates, battery, thermal, dream registration) | done |
