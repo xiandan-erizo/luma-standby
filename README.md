@@ -60,7 +60,7 @@ Default blue/pink (#25596A / #FFCAD9), a real bundled tall display font, fixed d
 
 Weather cache/IO is visible-lifecycle scoped and throttled. Notifications are sanitized in memory and hidden when locked; media comes from real playing sessions, never application-name guesses. Six offline city presets replace mandatory manual coordinate entry. No DreamService experiments.
 
-Current local checks: 99 JVM tests passing, `lintDebug` zero errors (26 warnings remain), `assembleDebug` successful. Xiaomi screenshots verified blue/pink layout and real media metadata; final uniform-glyph rounding/preview cap was built after USB disconnection, so final on-device acceptance and live weather fetch remain pending.
+Current local checks: 103 JVM tests passing, `lintDebug` zero errors (26 warnings remain), `assembleDebug` and `assembleRelease` successful with the OFL license verified byte-for-byte inside the release APK. On Xiaomi 17 the blue/pink face, rail tiles, real MediaSession metadata, sanitized notification tile, aligned date and a live Beijing weather reading were all seen on screen. Remaining gaps: long-duration OLED drift observation, post-change landscape preview acceptance, and panel-level power/refresh measurements.
 
 ## Verified locally
 

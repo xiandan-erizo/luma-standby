@@ -102,11 +102,15 @@ class StandbyActivity : ComponentActivity() {
             repeatOnLifecycle(Lifecycle.State.RESUMED) {
                 launch {
                     repository.settings.collect { latest ->
+                        val previousCity = settings.weatherCity
                         settings = latest
                         applySettings(latest)
                         applyRefreshIntent(baselineState())
                         refreshWidgets()
                         widgetTicks.tryEmit(Unit)
+                        // A newly chosen city must fetch now, not wait for the next minute
+                        // boundary, which is how the weather tile used to look broken.
+                        if (latest.weatherCity != previousCity) refreshWidgets()
                     }
                 }
                 launch { weatherStore.snapshot.collect { refreshWidgets() } }
@@ -115,7 +119,8 @@ class StandbyActivity : ComponentActivity() {
                     widgetTicks.collectLatest {
                         weatherStore.update(
                             settings.mode != DisplayMode.ULTRA_LOW_POWER && settings.widgetPlacements.any { it.widgetId == "weather" },
-                            settings.weatherLat, settings.weatherLon, settings.weatherCity,
+                            settings.weatherLat, settings.weatherLon,
+                            settings.weatherCity?.ifBlank { null },
                         )
                     }
                 }

@@ -68,6 +68,9 @@ class ClockView @JvmOverloads constructor(
     private var hintText: String? = null
     private var hintAlpha: Float = 0f
 
+    /** Compact date belongs to the rail layout, not to "widgets happen to exist". */
+    private var showCompactDate: Boolean = true
+
     /** Widget tiles, already computed by the caller: layout here is pure drawing. */
     private var widgetTiles: List<WidgetTile> = emptyList()
     private val widgetPrimaryPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -189,6 +192,7 @@ class ClockView @JvmOverloads constructor(
 
         val now = Calendar.getInstance()
         val layout = FaceLayout.create(w, h, widgetTiles.isNotEmpty())
+        showCompactDate = w >= h
         val drift = driftFor(now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE))
         canvas.save()
         canvas.translate(drift.first, drift.second)
@@ -286,11 +290,18 @@ class ClockView @JvmOverloads constructor(
     }
 
     private fun drawDate(canvas: Canvas, box: FaceBox) {
-        val text = if (widgetTiles.isNotEmpty()) DateFormat.format(if (Locale.getDefault().language == "zh") "d EEE" else "EEE d", Date()).toString() else dateFormatter.format(Date())
+        val text = if (showCompactDate) {
+            DateFormat.format(if (Locale.getDefault().language == "zh") "d EEE" else "EEE d", Date()).toString()
+        } else {
+            dateFormatter.format(Date())
+        }
         datePaint.typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL); datePaint.color=colors.primary
         var size=box.height*.34f; datePaint.textSize=size
         size*=ClockTypography.shrinkFactor(datePaint.measureText(text),box.width); datePaint.textSize=size
-        canvas.drawText(text,box.left+box.width/2f,box.top+(box.height-(datePaint.ascent()+datePaint.descent()))/2f,datePaint)
+        // Left-aligned on the rail's shared margin so the date sits on the same
+        // vertical line as the icon column and the value column below it.
+        datePaint.textAlign = Paint.Align.LEFT
+        canvas.drawText(text,box.left,box.top+(box.height-(datePaint.ascent()+datePaint.descent()))/2f,datePaint)
     }
 
     private fun drawWidgets(canvas: Canvas, layout: FaceLayout) {

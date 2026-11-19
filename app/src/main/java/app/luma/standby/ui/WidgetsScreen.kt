@@ -10,7 +10,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -159,8 +159,10 @@ private fun WidgetPreview(settings: LumaSettings, resumeTick: Int) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(max = 240.dp)
-                .aspectRatio(2.17f)
+                // Rail-compressed face: fixed height first, then width-derived ratio.
+                // aspectRatio alone wins over heightIn in landscape and clips the face.
+                .fillMaxWidth()
+                .height(200.dp)
                 .clip(RoundedCornerShape(16.dp))
                 .background(Color.Black),
         ) {

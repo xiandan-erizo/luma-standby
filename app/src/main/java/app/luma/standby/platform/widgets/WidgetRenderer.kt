@@ -42,6 +42,13 @@ object WidgetRenderer {
                         if(data.weather?.isStale == true) context.getString(R.string.weather_cached) else null).joinToString(" · ")
                     content.copy(secondary = label)
                 }
+                "notification" -> if (content.secondary != null && content.secondary.equals(content.primary, ignoreCase = true)) {
+                    // Private-visibility notifications expose only the app label, which is
+                    // already the primary line; repeating it reads as a rendering bug.
+                    content.copy(secondary = null)
+                } else {
+                    content
+                }
                 else -> content
             }
             WidgetTile(placement.slot, content.copy(primary = clean(content.primary), secondary = content.secondary?.let(::clean)))

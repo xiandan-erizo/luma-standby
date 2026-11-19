@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -21,6 +20,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
@@ -51,8 +51,10 @@ fun PreviewScreen(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(max = 240.dp)
-                .aspectRatio(2.17f)
+                // Rail-compressed face: fixed height first, then width-derived ratio.
+                // aspectRatio alone wins over heightIn in landscape and clips the face.
+                .fillMaxWidth()
+                .height(200.dp)
                 .clip(RoundedCornerShape(16.dp)),
         ) {
             AndroidView(

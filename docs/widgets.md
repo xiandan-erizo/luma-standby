@@ -28,4 +28,7 @@ Notification snapshots are event-fed. One initial query on explicit opt-in or re
 - Xiaomi 17: revised icon/rail layout, real media title/artist and privacy-sanitized app-name notification rendering observed on screen. Bundled blue/pink display font and Chinese settings observed.
 - Beijing selection path exercised; live weather response/cache success was not confirmed before device disconnected. It remains pending, not reported as working end-to-end.
 - Latest uniform-glyph rounding and bounded landscape preview adjustment built/tested locally; fresh on-device screenshot remains pending after disconnection.
+- 2026-11-19 second device pass (reconnected): blue/pink face, rail tiles, real media and sanitized notification tile confirmed on screen; notification tile no longer repeats the app label; date aligned to the rail's left edge; a private-notification and a live Beijing weather reading (3°, 晴) both rendered.
+- Live weather end-to-end is now confirmed: selecting Beijing wrote `files/weather-v1.json` with `{"lat":39.9042,"lon":116.4074,"temperatureC":3,"condition":"CLEAR","city":"北京"}` and the tile shows `北京 · 晴`.
+- Two real bugs found only by looking at the device: the preset wrote an empty city string, and a new city did not trigger an immediate fetch. Both fixed.
 - Power savings and panel 1 Hz remain unproven. No DreamService preview/dock/AOD experiments were performed.
