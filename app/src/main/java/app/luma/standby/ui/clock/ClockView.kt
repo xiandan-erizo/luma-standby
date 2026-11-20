@@ -3,6 +3,8 @@ package app.luma.standby.ui.clock
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
+import android.view.animation.LinearInterpolator
+import android.view.animation.PathInterpolator
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -33,8 +35,6 @@ import android.text.TextUtils
 import android.text.format.DateFormat
 import android.util.AttributeSet
 import android.view.View
-import android.view.animation.OvershootInterpolator
-import android.view.animation.PathInterpolator
 import androidx.core.content.ContextCompat
 import app.luma.standby.R
 import app.luma.standby.domain.BurnInDrift
@@ -163,18 +163,20 @@ class ClockView @JvmOverloads constructor(
         ),
     )
 
-    // Finite, event-driven iOS StandBy animations (zero idle timers/loops).
+    // Finite, event-driven iOS StandBy physics motion (zero idle timers/loops).
     var animationsEnabled: Boolean = true
+    private val linearInterpolator = LinearInterpolator()
     private val iosFluidEase = PathInterpolator(0.22f, 1.0f, 0.36f, 1.0f)
     private val iosEaseOut = PathInterpolator(0.16f, 1.0f, 0.30f, 1.0f)
-    private val iosSpringPop = OvershootInterpolator(0.75f)
     private val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
 
-    private var alertProgress: Float = 0f
-    private var alertSpringProgress: Float = 0f
+    // Master choreographed notification timeline (0..1 linear; sub-beats evaluate custom springs).
+    private var alertTimeline: Float = 0f
+    private var alertExiting: Boolean = false
+    private var alertExitStartDragX: Float = 0f
+    private var alertExitStartDragY: Float = 0f
     private var alertRevealProgress: Float = 1f
     private var alertAnimator: ValueAnimator? = null
-    private var alertSpringAnimator: ValueAnimator? = null
     private var alertRevealAnimator: ValueAnimator? = null
 
     private var unreadPillProgress: Float = 0f
@@ -182,10 +184,17 @@ class ClockView @JvmOverloads constructor(
 
     private var hintAnimator: ValueAnimator? = null
 
+    // Live finger-following drag & smooth spring-back / face-switch momentum
+    private var dragOffsetX: Float = 0f
+    private var dragOffsetY: Float = 0f
+    private var dragReturnAnimator: ValueAnimator? = null
+
     private var outgoingBitmap: Bitmap? = null
     private var transitionProgress: Float = 1f
     private var transitionDirX: Int = 0
     private var transitionDirY: Int = 0
+    private var transitionStartOffsetX: Float = 0f
+    private var transitionStartOffsetY: Float = 0f
     private var transitionArmed: Boolean = false
     private var transitionAnimator: ValueAnimator? = null
     private var capturingSnapshot: Boolean = false
@@ -256,10 +265,80 @@ class ClockView @JvmOverloads constructor(
     }
 
     /**
+     * Live interactive finger-following drag with soft rubber-band resistance so the
+     * clock face or notification card feels physically attached to the user's touch.
+     */
+    fun setInteractiveDrag(rawDx: Float, rawDy: Float) {
+        if (!shouldAnimate()) return
+        dragReturnAnimator?.cancel()
+        val w = width.toFloat().coerceAtLeast(1f)
+        val h = height.toFloat().coerceAtLeast(1f)
+        if (activeAlert != null) {
+            dragOffsetX = rubberBand(rawDx, w * 0.16f)
+            dragOffsetY = rubberBand(rawDy, h * 0.28f)
+        } else {
+            // Lock subtly toward dominant drag axis for clean iOS horizontal/vertical feel
+            val absX = kotlin.math.abs(rawDx)
+            val absY = kotlin.math.abs(rawDy)
+            if (absY >= absX) {
+                dragOffsetX = rubberBand(rawDx * 0.18f, w * 0.04f)
+                dragOffsetY = rubberBand(rawDy, h * 0.22f)
+            } else {
+                dragOffsetX = rubberBand(rawDx, w * 0.20f)
+                dragOffsetY = rubberBand(rawDy * 0.18f, h * 0.04f)
+            }
+        }
+        invalidate()
+    }
+
+    /** Springs the clock face or notification card smoothly back to center on cancelled drag. */
+    fun releaseInteractiveDrag() {
+        if (kotlin.math.abs(dragOffsetX) < 0.5f && kotlin.math.abs(dragOffsetY) < 0.5f) {
+            dragOffsetX = 0f
+            dragOffsetY = 0f
+            return
+        }
+        if (!shouldAnimate()) {
+            dragOffsetX = 0f
+            dragOffsetY = 0f
+            invalidate()
+            return
+        }
+        val startX = dragOffsetX
+        val startY = dragOffsetY
+        dragReturnAnimator?.cancel()
+        dragReturnAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 400L
+            interpolator = linearInterpolator
+            addUpdateListener {
+                val p = springCurve(it.animatedValue as Float, damping = 0.78f, frequency = 1.65f)
+                dragOffsetX = startX * (1f - p)
+                dragOffsetY = startY * (1f - p)
+                invalidate()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    dragOffsetX = 0f
+                    dragOffsetY = 0f
+                    invalidate()
+                }
+            })
+            start()
+        }
+    }
+
+    /**
      * Captures a lightweight snapshot of the outgoing face right before a vertical
-     * face switch or horizontal palette switch so the new face glides smoothly in.
+     * face switch or horizontal palette switch, continuing seamlessly from the user's
+     * current interactive drag offset.
      */
     fun prepareTransition(directionX: Int, directionY: Int) {
+        dragReturnAnimator?.cancel()
+        val capturedDragX = dragOffsetX
+        val capturedDragY = dragOffsetY
+        dragOffsetX = 0f
+        dragOffsetY = 0f
+
         if (!shouldAnimate() || width <= 0 || height <= 0) {
             releaseOutgoingBitmap()
             return
@@ -283,6 +362,8 @@ class ClockView @JvmOverloads constructor(
         outgoingBitmap = snap
         transitionDirX = directionX
         transitionDirY = directionY
+        transitionStartOffsetX = capturedDragX
+        transitionStartOffsetY = capturedDragY
         transitionProgress = 0f
         transitionArmed = snap != null
     }
@@ -312,23 +393,25 @@ class ClockView @JvmOverloads constructor(
         if (changed) invalidate()
     }
 
-    /** Show, update (e.g. tap-to-reveal), or smoothly dismiss the full-screen iOS alert. */
+    /** Show, update (e.g. tap-to-reveal), or smoothly morph-dismiss the full-screen iOS alert. */
     fun setActiveAlert(alert: StandbyNotificationAlert?) {
         if (alert == activeAlert) return
         val previous = activeAlert
         activeAlert = alert
+        dragReturnAnimator?.cancel()
 
         if (alert != null) {
             val isRevealUpdate = previous != null && !previous.revealed && alert.revealed &&
                 previous.appLabel == alert.appLabel && previous.title == alert.title
             renderedAlert = alert
+            dragOffsetX = 0f
+            dragOffsetY = 0f
 
             if (!shouldAnimate()) {
                 alertAnimator?.cancel()
-                alertSpringAnimator?.cancel()
                 alertRevealAnimator?.cancel()
-                alertProgress = 1f
-                alertSpringProgress = 1f
+                alertExiting = false
+                alertTimeline = 1f
                 alertRevealProgress = 1f
                 invalidate()
                 return
@@ -338,7 +421,7 @@ class ClockView @JvmOverloads constructor(
                 alertRevealAnimator?.cancel()
                 alertRevealProgress = 0f
                 alertRevealAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-                    duration = 260L
+                    duration = 360L
                     interpolator = iosFluidEase
                     addUpdateListener {
                         alertRevealProgress = it.animatedValue as Float
@@ -352,13 +435,16 @@ class ClockView @JvmOverloads constructor(
                 animateAlertTransition(entering = true)
             }
         } else {
+            alertExitStartDragX = dragOffsetX
+            alertExitStartDragY = dragOffsetY
+            dragOffsetX = 0f
+            dragOffsetY = 0f
             if (!shouldAnimate() || renderedAlert == null) {
                 alertAnimator?.cancel()
-                alertSpringAnimator?.cancel()
                 alertRevealAnimator?.cancel()
                 renderedAlert = null
-                alertProgress = 0f
-                alertSpringProgress = 0f
+                alertExiting = false
+                alertTimeline = 0f
                 alertRevealProgress = 1f
                 invalidate()
                 return
@@ -397,10 +483,12 @@ class ClockView @JvmOverloads constructor(
         renderedAlert = null
         unreadSummary = null
         renderedUnread = null
-        alertProgress = 0f
-        alertSpringProgress = 0f
+        alertExiting = false
+        alertTimeline = 0f
         alertRevealProgress = 1f
         unreadPillProgress = 0f
+        dragOffsetX = 0f
+        dragOffsetY = 0f
         unreadPillBounds.setEmpty()
         appIconCache.clear()
         invalidate()
@@ -438,13 +526,15 @@ class ClockView @JvmOverloads constructor(
 
     private fun cancelAllAnimations() {
         alertAnimator?.cancel()
-        alertSpringAnimator?.cancel()
         alertRevealAnimator?.cancel()
         unreadPillAnimator?.cancel()
         hintAnimator?.cancel()
+        dragReturnAnimator?.cancel()
         transitionAnimator?.cancel()
         transitionArmed = false
         transitionProgress = 1f
+        dragOffsetX = 0f
+        dragOffsetY = 0f
         releaseOutgoingBitmap()
     }
 
@@ -461,11 +551,11 @@ class ClockView @JvmOverloads constructor(
             invalidate()
             return
         }
-        val durationMs = if (transitionDirY != 0) 380L else 320L
+        val durationMs = if (transitionDirY != 0) 580L else 500L
         transitionProgress = 0f
         transitionAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = durationMs
-            interpolator = iosFluidEase
+            interpolator = linearInterpolator
             addUpdateListener {
                 transitionProgress = it.animatedValue as Float
                 invalidate()
@@ -473,6 +563,8 @@ class ClockView @JvmOverloads constructor(
             addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
                     transitionProgress = 1f
+                    transitionStartOffsetX = 0f
+                    transitionStartOffsetY = 0f
                     releaseOutgoingBitmap()
                     invalidate()
                 }
@@ -483,36 +575,28 @@ class ClockView @JvmOverloads constructor(
 
     private fun animateAlertTransition(entering: Boolean) {
         alertAnimator?.cancel()
-        alertSpringAnimator?.cancel()
-        val target = if (entering) 1f else 0f
+        alertExiting = !entering
+        alertTimeline = 0f
 
-        alertAnimator = ValueAnimator.ofFloat(alertProgress, target).apply {
-            duration = if (entering) 340L else 240L
-            interpolator = iosEaseOut
+        alertAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = if (entering) 740L else 480L
+            interpolator = linearInterpolator
             addUpdateListener {
-                alertProgress = it.animatedValue as Float
+                alertTimeline = it.animatedValue as Float
                 invalidate()
             }
             addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
                     if (!entering && activeAlert == null) {
                         renderedAlert = null
-                        alertProgress = 0f
-                        alertSpringProgress = 0f
+                        alertExiting = false
+                        alertTimeline = 0f
+                        alertExitStartDragX = 0f
+                        alertExitStartDragY = 0f
                         invalidate()
                     }
                 }
             })
-            start()
-        }
-
-        alertSpringAnimator = ValueAnimator.ofFloat(alertSpringProgress, target).apply {
-            duration = if (entering) 420L else 230L
-            interpolator = if (entering) iosSpringPop else iosEaseOut
-            addUpdateListener {
-                alertSpringProgress = it.animatedValue as Float
-                invalidate()
-            }
             start()
         }
     }
@@ -526,7 +610,7 @@ class ClockView @JvmOverloads constructor(
             return
         }
         unreadPillAnimator = ValueAnimator.ofFloat(unreadPillProgress, target).apply {
-            duration = if (target > 0f) 280L else 200L
+            duration = if (target > 0f) 420L else 280L
             interpolator = iosFluidEase
             addUpdateListener {
                 unreadPillProgress = it.animatedValue as Float
@@ -554,7 +638,7 @@ class ClockView @JvmOverloads constructor(
             return
         }
         hintAnimator = ValueAnimator.ofFloat(hintAlpha, target).apply {
-            duration = if (target > 0f) 200L else 320L
+            duration = if (target > 0f) 280L else 420L
             interpolator = if (target > 0f) iosFluidEase else iosEaseOut
             addUpdateListener {
                 hintAlpha = it.animatedValue as Float
@@ -586,29 +670,42 @@ class ClockView @JvmOverloads constructor(
         val nightRed = isNightRed()
         val darkSurface = isDark(colors.background) || nightRed
 
-        // Underlying clock subtly scales back into spatial depth when an iOS alert blooms.
-        val alertP = alertProgress.coerceIn(0f, 1f)
-        val depthScale = 1f - 0.055f * alertP
+        val alertVisible = renderedAlert != null
+        val tAlert = alertTimeline.coerceIn(0f, 1f)
+        val alertDragFrac = if (activeAlert != null) {
+            (kotlin.math.hypot(dragOffsetX.toDouble(), dragOffsetY.toDouble()).toFloat() / (h * 0.35f)).coerceIn(0f, 0.55f)
+        } else 0f
+        val alertScrimP = when {
+            !alertVisible -> 0f
+            alertExiting -> (1f - easeOutCubic(tAlert)).coerceIn(0f, 1f)
+            else -> (easeOutCubic(subTimeline(tAlert, 0.0f, 0.62f)) * (1f - alertDragFrac * 0.45f)).coerceIn(0f, 1f)
+        }
+
+        // Underlying clock pulls back smoothly into spatial depth (1.0 -> 0.90) as notification blooms
+        val depthScale = 1f - 0.095f * alertScrimP
 
         canvas.save()
-        if (alertP > 0.001f) {
+        if (alertScrimP > 0.001f) {
             canvas.scale(depthScale, depthScale, w * 0.5f, h * 0.5f)
         }
 
         val outBmp = outgoingBitmap
         if (!capturingSnapshot && outBmp != null && !outBmp.isRecycled && transitionProgress < 0.999f) {
-            val p = transitionProgress.coerceIn(0f, 1f)
-            // Pure OLED black base behind cross-sliding faces
+            val rawP = transitionProgress.coerceIn(0f, 1f)
+            val springP = springCurve(rawP, damping = 0.88f, frequency = 1.48f)
+            val fadeOut = (1f - easeOutCubic(subTimeline(rawP, 0.0f, 0.68f))).coerceIn(0f, 1f)
+            val fadeIn = easeOutCubic(subTimeline(rawP, 0.08f, 0.82f)).coerceIn(0f, 1f)
+
             backgroundPaint.shader = null
             backgroundPaint.color = if (darkSurface) Color.BLACK else colors.background
             canvas.drawRect(0f, 0f, w, h, backgroundPaint)
 
-            // 1. Outgoing face glides away smoothly
-            val outAlpha = ((1f - p * 1.15f).coerceIn(0f, 1f) * 255f).toInt()
+            // 1. Outgoing face glides away from the exact drag offset with velvety weight
+            val outAlpha = (fadeOut * 255f).toInt()
             if (outAlpha > 0) {
-                val outScale = 1f - 0.055f * p
-                val outTx = -transitionDirX * w * 0.14f * p
-                val outTy = -transitionDirY * h * 0.22f * p
+                val outScale = 1f - 0.075f * springP
+                val outTx = transitionStartOffsetX * (1f - springP) - transitionDirX * w * 0.22f * springP
+                val outTy = transitionStartOffsetY * (1f - springP) - transitionDirY * h * 0.28f * springP
                 canvas.save()
                 canvas.translate(outTx, outTy)
                 canvas.scale(outScale, outScale, w * 0.5f, h * 0.5f)
@@ -619,12 +716,12 @@ class ClockView @JvmOverloads constructor(
                 canvas.restore()
             }
 
-            // 2. Incoming new face glides in with iOS fluid ease-out
-            val inAlpha = ((p * 1.15f).coerceIn(0f, 1f) * 255f).toInt()
+            // 2. Incoming new face glides in with weighted iOS spring momentum
+            val inAlpha = (fadeIn * 255f).toInt()
             if (inAlpha > 0) {
-                val inScale = 0.945f + 0.055f * p
-                val inTx = transitionDirX * w * 0.14f * (1f - p)
-                val inTy = transitionDirY * h * 0.24f * (1f - p)
+                val inScale = 0.925f + 0.075f * springP
+                val inTx = transitionDirX * w * 0.24f * (1f - springP)
+                val inTy = transitionDirY * h * 0.30f * (1f - springP)
                 layerBounds.set(0f, 0f, w, h)
                 val inLayer = canvas.saveLayerAlpha(layerBounds, inAlpha)
                 canvas.translate(inTx, inTy)
@@ -633,6 +730,15 @@ class ClockView @JvmOverloads constructor(
                 canvas.restoreToCount(inLayer)
             }
         } else {
+            // Apply live finger-following rubber-band drag on the clock face
+            val clockDragX = if (activeAlert == null) dragOffsetX else 0f
+            val clockDragY = if (activeAlert == null) dragOffsetY else 0f
+            if (kotlin.math.abs(clockDragX) > 0.5f || kotlin.math.abs(clockDragY) > 0.5f) {
+                val dragMag = (kotlin.math.hypot(clockDragX.toDouble(), clockDragY.toDouble()).toFloat() / (min(w, h) * 0.45f)).coerceIn(0f, 1f)
+                val dragScale = 1f - 0.032f * dragMag
+                canvas.translate(clockDragX, clockDragY)
+                canvas.scale(dragScale, dragScale, w * 0.5f, h * 0.5f)
+            }
             drawBaseFace(canvas, w, h)
         }
         canvas.restore()
@@ -641,18 +747,24 @@ class ClockView @JvmOverloads constructor(
         canvas.save()
         canvas.translate(drift.first, drift.second)
 
-        // Top-center Liquid Glass unread pill (smoothly fades out as full-screen alert blooms)
-        val pillVis = (unreadPillProgress * (1f - alertP)).coerceIn(0f, 1f)
+        // Top-center Liquid Glass unread pill: hides smoothly when card morphs open,
+        // and blooms back right as the shrinking card docks into the top pill!
+        val pillMask = when {
+            !alertVisible -> 1f
+            alertExiting -> easeOutCubic(subTimeline(tAlert, 0.58f, 1.0f))
+            else -> (1f - easeOutCubic(subTimeline(tAlert, 0.0f, 0.28f)))
+        }
+        val pillVis = (unreadPillProgress * pillMask).coerceIn(0f, 1f)
         if (pillVis > 0.01f && renderedUnread != null) {
             drawUnreadNotificationPill(canvas, w, h, nightRed, darkSurface, pillVis)
         } else if (activeAlert != null || renderedUnread == null) {
             unreadPillBounds.setEmpty()
         }
 
-        // Full-screen iOS StandBy Notification Card (with spring entrance & smooth tuck-away)
+        // Full-screen iOS StandBy Notification Card (multi-stage pill-to-card spring morph)
         val alert = renderedAlert
-        if (alert != null && alertP > 0.005f) {
-            drawNotificationOverlay(canvas, w, h, alert, nightRed, darkSurface, alertP, alertSpringProgress)
+        if (alert != null && (alertExiting || tAlert > 0.001f)) {
+            drawNotificationOverlay(canvas, w, h, alert, nightRed, darkSurface, tAlert, alertExiting, alertScrimP)
         } else {
             drawTransientIndicator(canvas, w, h, nightRed, darkSurface)
         }
@@ -2523,9 +2635,12 @@ class ClockView @JvmOverloads constructor(
     }
 
     /**
-     * 1:1 iOS 26/27 StandBy Full-Screen Incoming Notification Overlay:
-     * Smoothly dims the clock behind, blooms a Liquid Glass hero card with iOS spring
-     * physics from the top-center pill, and smoothly tucks away on dismiss.
+     * 1:1 iOS 26/27 StandBy Choreographed Full-Screen Notification Overlay:
+     * - Enter (740 ms): spatial clock pullback + ambient aura bloom + Liquid Glass card
+     *   morphing from the top pill via Apple damped spring + staggered icon/meta/title
+     *   entrances + single diagonal Liquid Glass specular light sheen sweep.
+     * - Exit (480 ms): content softens & lifts while the glass card physically morphs
+     *   back up into the top-center unread pill.
      */
     private fun drawNotificationOverlay(
         canvas: Canvas,
@@ -2534,26 +2649,27 @@ class ClockView @JvmOverloads constructor(
         alert: StandbyNotificationAlert,
         nightRed: Boolean,
         darkSurface: Boolean,
-        progress: Float,
-        springProgress: Float,
+        timeline: Float,
+        exiting: Boolean,
+        scrimP: Float,
     ) {
-        val scrimP = progress.coerceIn(0f, 1f)
         // 1. Frosted ambient backdrop smoothly dimming the underlying clock
         cardFillPaint.shader = null
         cardFillPaint.color = when {
             nightRed -> Color.argb((236 * scrimP).toInt(), 0, 0, 0)
-            darkSurface -> Color.argb((222 * scrimP).toInt(), 4, 5, 8)
+            darkSurface -> Color.argb((224 * scrimP).toInt(), 4, 5, 8)
             else -> Color.argb((205 * scrimP).toInt(), 228, 231, 238)
         }
         canvas.drawRect(0f, 0f, w, h, cardFillPaint)
 
-        // 2. Subtle radial ambient halo behind the alert card
+        // 2. Ambient backlight halo swelling gently behind the Liquid Glass card
         val accentGlow = if (nightRed) Color.parseColor("#B81D16") else vibrantGlowAccent()
-        if (darkSurface) {
+        if (darkSurface && scrimP > 0.01f) {
+            val haloScale = 0.72f + 0.30f * scrimP
             val haloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 shader = RadialGradient(
-                    w * 0.5f, h * 0.5f, max(w, h) * 0.46f,
-                    intArrayOf(withAlpha(accentGlow, (if (nightRed) 0.22f else 0.28f) * scrimP), Color.TRANSPARENT),
+                    w * 0.5f, h * 0.5f, max(w, h) * 0.46f * haloScale,
+                    intArrayOf(withAlpha(accentGlow, (if (nightRed) 0.24f else 0.30f) * scrimP), Color.TRANSPARENT),
                     floatArrayOf(0f, 1f),
                     Shader.TileMode.CLAMP,
                 )
@@ -2561,27 +2677,69 @@ class ClockView @JvmOverloads constructor(
             canvas.drawRect(0f, 0f, w, h, haloPaint)
         }
 
-        // 3. Centered Liquid Glass Hero Notification Card with iOS spring bloom
-        val cardAlpha = ((scrimP * 1.25f).coerceIn(0f, 1f) * 255f).toInt()
-        if (cardAlpha <= 2) return
-        val cardScale = 0.84f + 0.16f * springProgress
-        val cardDy = -h * 0.068f * (1f - springProgress)
+        // 3. Target Hero Card & Top-Center Pill anchor boxes for seamless morph
+        val landscape = w >= h
+        val heroW = if (landscape) min(w * 0.76f, h * 1.66f) else w * 0.90f
+        val heroH = if (landscape) min(h * 0.58f, heroW * 0.44f) else min(h * 0.34f, w * 0.62f)
+        val heroLeft = w * 0.5f - heroW * 0.5f
+        val heroTop = h * 0.5f - heroH * 0.5f
+        val heroCornerR = min(heroW, heroH) * 0.145f
+
+        val pillH = (h * 0.056f).coerceIn(28f, 72f)
+        val pillW = (w * 0.20f).coerceIn(pillH * 3.2f, heroW * 0.48f)
+        val pillTop = (h * 0.036f).coerceAtLeast(10f)
+        val pillLeft = w * 0.5f - pillW * 0.5f
+        val pillCornerR = pillH * 0.5f
+
+        // Compute morph geometry + staggered element timelines
+        val morphP: Float
+        val shellAlpha: Float
+        val iconScaleP: Float
+        val iconAlpha: Float
+        val metaP: Float
+        val bodyP: Float
+        val shimmerT: Float
+
+        if (!exiting) {
+            morphP = springCurve(subTimeline(timeline, 0.0f, 0.76f), damping = 0.80f, frequency = 1.56f)
+            shellAlpha = easeOutCubic(subTimeline(timeline, 0.0f, 0.22f))
+            iconScaleP = springCurve(subTimeline(timeline, 0.10f, 0.68f), damping = 0.73f, frequency = 1.72f)
+            iconAlpha = easeOutCubic(subTimeline(timeline, 0.10f, 0.34f))
+            metaP = easeOutCubic(subTimeline(timeline, 0.22f, 0.70f))
+            bodyP = easeOutCubic(subTimeline(timeline, 0.30f, 0.84f))
+            shimmerT = subTimeline(timeline, 0.34f, 0.98f)
+        } else {
+            val backP = easeInOutCubic(timeline)
+            morphP = 1f - backP
+            shellAlpha = (1f - easeOutCubic(subTimeline(timeline, 0.64f, 1.0f))).coerceIn(0f, 1f)
+            val contentOut = (1f - easeOutCubic(subTimeline(timeline, 0.0f, 0.38f))).coerceIn(0f, 1f)
+            iconScaleP = 0.84f + 0.16f * contentOut
+            iconAlpha = contentOut
+            metaP = contentOut
+            bodyP = contentOut
+            shimmerT = 0f
+        }
+
+        val shellAlphaInt = (shellAlpha * 255f).toInt().coerceIn(0, 255)
+        if (shellAlphaInt <= 2) return
+
+        // Interpolate card box smoothly between Top Pill and Hero Card (+ live finger drag)
+        val liveDragX = if (!exiting) dragOffsetX else alertExitStartDragX * morphP
+        val liveDragY = if (!exiting) dragOffsetY else alertExitStartDragY * morphP
+        val dragShrink = if (!exiting) {
+            1f - 0.07f * (kotlin.math.hypot(liveDragX.toDouble(), liveDragY.toDouble()).toFloat() / (h * 0.30f)).coerceIn(0f, 1f)
+        } else 1f
+
+        val curW = lerp(pillW, heroW, morphP) * dragShrink
+        val curH = lerp(pillH, heroH, morphP) * dragShrink
+        val curCx = lerp(pillLeft + pillW * 0.5f, heroLeft + heroW * 0.5f, morphP) + liveDragX
+        val curCy = lerp(pillTop + pillH * 0.5f, heroTop + heroH * 0.5f, morphP) + liveDragY
+        val cardBox = FaceBox(curCx - curW * 0.5f, curCy - curH * 0.5f, curCx + curW * 0.5f, curCy + curH * 0.5f)
+        val cornerR = lerp(pillCornerR, heroCornerR, morphP.coerceIn(0f, 1f))
 
         layerBounds.set(0f, 0f, w, h)
-        val cardLayer = canvas.saveLayerAlpha(layerBounds, cardAlpha)
-        canvas.translate(0f, cardDy)
-        canvas.scale(cardScale, cardScale, w * 0.5f, h * 0.5f)
+        val shellLayer = canvas.saveLayerAlpha(layerBounds, shellAlphaInt)
 
-        val landscape = w >= h
-        val cardW = if (landscape) min(w * 0.76f, h * 1.66f) else w * 0.90f
-        val cardH = if (landscape) min(h * 0.58f, cardW * 0.44f) else min(h * 0.34f, w * 0.62f)
-        val cardBox = FaceBox(
-            w * 0.5f - cardW * 0.5f,
-            h * 0.5f - cardH * 0.5f,
-            w * 0.5f + cardW * 0.5f,
-            h * 0.5f + cardH * 0.5f,
-        )
-        val cornerR = min(cardW, cardH) * 0.145f
         val cardTop = when {
             nightRed -> Color.argb(242, 20, 4, 4)
             darkSurface -> Color.argb(232, 34, 36, 45)
@@ -2594,36 +2752,56 @@ class ClockView @JvmOverloads constructor(
         }
         drawGlassCard(canvas, cardBox, cornerR, cardTop, cardBot, nightRed, darkSurface)
 
-        val padX = cardH * 0.14f
-        val iconSize = (cardH * 0.44f).coerceAtMost(cardW * 0.24f)
-        val iconLeft = cardBox.left + padX
-        val iconTop = cardBox.centerY - iconSize * 0.5f
+        // Clip inner staggered content + diagonal Liquid Glass specular shimmer to the morphing card
+        canvas.save()
+        clipPath.reset()
+        rectScratch.set(cardBox.left, cardBox.top, cardBox.right, cardBox.bottom)
+        clipPath.addRoundRect(rectScratch, cornerR, cornerR, Path.Direction.CW)
+        canvas.clipPath(clipPath)
 
-        val appDrawable = loadAppIcon(alert.packageName)
-        if (appDrawable != null) {
-            drawSquircleAppIcon(canvas, appDrawable, iconLeft, iconTop, iconSize, nightRed)
-        } else {
-            val badgeTint = if (nightRed) Color.parseColor("#FF3B30") else vibrantGlowAccent()
-            val iconBox = FaceBox(iconLeft, iconTop, iconLeft + iconSize, iconTop + iconSize)
-            drawGlassCard(
-                canvas, iconBox, iconSize * 0.23f,
-                shiftLuminance(badgeTint, 0.10f),
-                shiftLuminance(badgeTint, -0.16f),
-                nightRed, darkSurface, skyCard = !nightRed,
-            )
-            val glyphSize = iconSize * 0.54f
-            WidgetIcons.draw(
-                canvas, WidgetGlyph.BELL,
-                iconLeft + (iconSize - glyphSize) * 0.5f,
-                iconTop + (iconSize - glyphSize) * 0.5f,
-                glyphSize,
-                if (nightRed) Color.BLACK else Color.WHITE,
-                nightRed = nightRed,
-            )
+        // Anchor inner typography to steady hero proportions centered inside the morphing shell
+        val contentBox = FaceBox(curCx - heroW * 0.5f, curCy - heroH * 0.5f, curCx + heroW * 0.5f, curCy + heroH * 0.5f)
+        val padX = heroH * 0.14f
+        val iconSize = (heroH * 0.44f).coerceAtMost(heroW * 0.24f)
+        val iconLeft = contentBox.left + padX
+        val iconTop = contentBox.centerY - iconSize * 0.5f
+
+        // Beat 2: Giant Squircle App Icon with its own poised micro-spring
+        val iconAlphaInt = (iconAlpha * 255f).toInt().coerceIn(0, 255)
+        if (iconAlphaInt > 2) {
+            val iconScale = 0.64f + 0.36f * iconScaleP
+            val iconCx = iconLeft + iconSize * 0.5f
+            val iconCy = iconTop + iconSize * 0.5f
+            layerBounds.set(iconLeft - iconSize * 0.3f, iconTop - iconSize * 0.3f, iconLeft + iconSize * 1.3f, iconTop + iconSize * 1.3f)
+            val iconLayer = canvas.saveLayerAlpha(layerBounds, iconAlphaInt)
+            canvas.scale(iconScale, iconScale, iconCx, iconCy)
+            val appDrawable = loadAppIcon(alert.packageName)
+            if (appDrawable != null) {
+                drawSquircleAppIcon(canvas, appDrawable, iconLeft, iconTop, iconSize, nightRed)
+            } else {
+                val badgeTint = if (nightRed) Color.parseColor("#FF3B30") else vibrantGlowAccent()
+                val iconBox = FaceBox(iconLeft, iconTop, iconLeft + iconSize, iconTop + iconSize)
+                drawGlassCard(
+                    canvas, iconBox, iconSize * 0.23f,
+                    shiftLuminance(badgeTint, 0.10f),
+                    shiftLuminance(badgeTint, -0.16f),
+                    nightRed, darkSurface, skyCard = !nightRed,
+                )
+                val glyphSize = iconSize * 0.54f
+                WidgetIcons.draw(
+                    canvas, WidgetGlyph.BELL,
+                    iconLeft + (iconSize - glyphSize) * 0.5f,
+                    iconTop + (iconSize - glyphSize) * 0.5f,
+                    glyphSize,
+                    if (nightRed) Color.BLACK else Color.WHITE,
+                    nightRed = nightRed,
+                )
+            }
+            canvas.restoreToCount(iconLayer)
         }
 
         val textLeft = iconLeft + iconSize + padX * 0.85f
-        val textRight = cardBox.right - padX
+        val textRight = contentBox.right - padX
         val availW = (textRight - textLeft).coerceAtLeast(1f)
         val primaryText = when {
             nightRed -> Color.parseColor("#FF3B30")
@@ -2636,103 +2814,192 @@ class ClockView @JvmOverloads constructor(
             else -> Color.argb(165, 28, 28, 30)
         }
 
-        val metaText = "${alert.appLabel}  ·  ${context.getString(R.string.notif_just_now)}"
-        widgetSecondaryPaint.typeface = roundedBold
-        widgetSecondaryPaint.textSize = (cardH * 0.095f).coerceIn(14f, 44f)
-        widgetSecondaryPaint.color = secondaryText
+        // Beat 3: Staggered App Name · now + "+N more" pill
+        if (metaP > 0.01f) {
+            val metaDy = if (!exiting) heroH * 0.045f * (1f - metaP) else -heroH * 0.028f * (1f - metaP)
+            val metaY = contentBox.top + heroH * 0.28f + metaDy
+            val metaText = "${alert.appLabel}  ·  ${context.getString(R.string.notif_just_now)}"
+            widgetSecondaryPaint.typeface = roundedBold
+            widgetSecondaryPaint.textSize = (heroH * 0.095f).coerceIn(14f, 44f)
+            widgetSecondaryPaint.color = withAlpha(secondaryText, metaP)
 
-        val metaY = cardBox.top + cardH * 0.28f
-        var metaAvail = availW
-        if (alert.unreadCount > 1) {
-            val moreLabel = context.getString(R.string.notif_more_badge, alert.unreadCount - 1)
-            val moreSize = (cardH * 0.072f).coerceIn(12f, 32f)
-            dateHeaderPaint.typeface = roundedBold
-            dateHeaderPaint.textSize = moreSize
-            val moreTw = dateHeaderPaint.measureText(moreLabel)
-            val morePadX = moreSize * 0.65f
-            val moreH = moreSize * 1.75f
-            val moreW = moreTw + morePadX * 2f
-            val moreBox = FaceBox(textRight - moreW, metaY - moreH * 0.72f, textRight, metaY + moreH * 0.28f)
-            drawGlassCard(
-                canvas, moreBox, moreH * 0.5f,
-                if (nightRed) Color.argb(60, 255, 59, 48) else if (darkSurface) Color.argb(40, 255, 255, 255) else Color.argb(20, 0, 0, 0),
-                if (nightRed) Color.argb(36, 255, 59, 48) else if (darkSurface) Color.argb(24, 255, 255, 255) else Color.argb(14, 0, 0, 0),
-                nightRed, darkSurface,
-            )
-            dateHeaderPaint.textAlign = Paint.Align.CENTER
-            dateHeaderPaint.color = secondaryText
-            val my = moreBox.centerY - (dateHeaderPaint.ascent() + dateHeaderPaint.descent()) * 0.5f
-            canvas.drawText(moreLabel, moreBox.centerX, my, dateHeaderPaint)
-            dateHeaderPaint.textAlign = Paint.Align.LEFT
-            metaAvail = (availW - moreW - padX * 0.35f).coerceAtLeast(1f)
-        }
-        val clippedMeta = TextUtils.ellipsize(metaText, widgetSecondaryPaint, metaAvail, TextUtils.TruncateAt.END).toString()
-        canvas.drawText(clippedMeta, textLeft, metaY, widgetSecondaryPaint)
-
-        // Main Hero Body (with smooth reveal bloom when transitioning from Tap-to-View)
-        val revealP = alertRevealProgress.coerceIn(0f, 1f)
-        val revealDy = cardH * 0.03f * (1f - revealP)
-        if (alert.isMasked) {
-            widgetPrimaryPaint.typeface = roundedExtraBold
-            widgetPrimaryPaint.textSize = (cardH * 0.175f).coerceIn(22f, 82f)
-            widgetPrimaryPaint.color = primaryText
-            val maskedTitle = context.getString(R.string.notif_new)
-            val clippedTitle = TextUtils.ellipsize(maskedTitle, widgetPrimaryPaint, availW, TextUtils.TruncateAt.END).toString()
-            canvas.drawText(clippedTitle, textLeft, cardBox.top + cardH * 0.56f, widgetPrimaryPaint)
-
-            if (alert.tapToReveal && !alert.isPrivateRedacted) {
-                val tapLabel = context.getString(R.string.notif_tap_to_view)
-                val tapSize = (cardH * 0.082f).coerceIn(13f, 36f)
+            var metaAvail = availW
+            if (alert.unreadCount > 1) {
+                val moreLabel = context.getString(R.string.notif_more_badge, alert.unreadCount - 1)
+                val moreSize = (heroH * 0.072f).coerceIn(12f, 32f)
                 dateHeaderPaint.typeface = roundedBold
-                dateHeaderPaint.textSize = tapSize
-                val tw = dateHeaderPaint.measureText(tapLabel)
-                val pPadX = tapSize * 0.9f
-                val pH = tapSize * 1.95f
-                val pW = min(tw + pPadX * 2f, availW)
-                val pTop = cardBox.top + cardH * 0.65f
-                val pillBox = FaceBox(textLeft, pTop, textLeft + pW, pTop + pH)
+                dateHeaderPaint.textSize = moreSize
+                val moreTw = dateHeaderPaint.measureText(moreLabel)
+                val morePadX = moreSize * 0.65f
+                val moreH = moreSize * 1.75f
+                val moreW = moreTw + morePadX * 2f
+                val moreBox = FaceBox(textRight - moreW, metaY - moreH * 0.72f, textRight, metaY + moreH * 0.28f)
+                layerBounds.set(moreBox.left - 4f, moreBox.top - 4f, moreBox.right + 4f, moreBox.bottom + 4f)
+                val moreLayer = canvas.saveLayerAlpha(layerBounds, (metaP * 255f).toInt().coerceIn(0, 255))
                 drawGlassCard(
-                    canvas, pillBox, pH * 0.5f,
-                    if (nightRed) Color.argb(80, 255, 59, 48) else if (darkSurface) Color.argb(56, 255, 255, 255) else Color.argb(26, 0, 0, 0),
-                    if (nightRed) Color.argb(46, 255, 59, 48) else if (darkSurface) Color.argb(30, 255, 255, 255) else Color.argb(16, 0, 0, 0),
+                    canvas, moreBox, moreH * 0.5f,
+                    if (nightRed) Color.argb(60, 255, 59, 48) else if (darkSurface) Color.argb(40, 255, 255, 255) else Color.argb(20, 0, 0, 0),
+                    if (nightRed) Color.argb(36, 255, 59, 48) else if (darkSurface) Color.argb(24, 255, 255, 255) else Color.argb(14, 0, 0, 0),
                     nightRed, darkSurface,
                 )
                 dateHeaderPaint.textAlign = Paint.Align.CENTER
-                dateHeaderPaint.color = primaryText
-                val py = pillBox.centerY - (dateHeaderPaint.ascent() + dateHeaderPaint.descent()) * 0.5f
-                canvas.drawText(tapLabel, pillBox.centerX, py, dateHeaderPaint)
+                dateHeaderPaint.color = secondaryText
+                val my = moreBox.centerY - (dateHeaderPaint.ascent() + dateHeaderPaint.descent()) * 0.5f
+                canvas.drawText(moreLabel, moreBox.centerX, my, dateHeaderPaint)
                 dateHeaderPaint.textAlign = Paint.Align.LEFT
+                canvas.restoreToCount(moreLayer)
+                metaAvail = (availW - moreW - padX * 0.35f).coerceAtLeast(1f)
             }
-        } else {
-            widgetPrimaryPaint.typeface = roundedExtraBold
-            widgetPrimaryPaint.color = withAlpha(primaryText, revealP)
-            val baseSize = (cardH * 0.165f).coerceIn(22f, 78f)
-            widgetPrimaryPaint.textSize = baseSize
-            val staticLayout = StaticLayout.Builder
-                .obtain(alert.title, 0, alert.title.length, widgetPrimaryPaint, availW.toInt().coerceAtLeast(1))
-                .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-                .setMaxLines(2)
-                .setEllipsize(TextUtils.TruncateAt.END)
-                .setIncludePad(false)
-                .setLineSpacing(0f, 1.12f)
-                .build()
-            val textTop = cardBox.top + cardH * 0.38f + revealDy
-            canvas.save()
-            canvas.translate(textLeft, textTop)
-            staticLayout.draw(canvas)
-            canvas.restore()
+            val clippedMeta = TextUtils.ellipsize(metaText, widgetSecondaryPaint, metaAvail, TextUtils.TruncateAt.END).toString()
+            canvas.drawText(clippedMeta, textLeft, metaY, widgetSecondaryPaint)
+        }
+
+        // Beat 4: Staggered Hero Title / Privacy Shield (plus smooth reveal bloom)
+        val revealP = alertRevealProgress.coerceIn(0f, 1f)
+        val combinedBodyAlpha = (bodyP * revealP).coerceIn(0f, 1f)
+        if (combinedBodyAlpha > 0.01f) {
+            val bodyDy = if (!exiting) {
+                heroH * 0.062f * (1f - bodyP) + heroH * 0.032f * (1f - revealP)
+            } else {
+                -heroH * 0.032f * (1f - bodyP)
+            }
+
+            if (alert.isMasked) {
+                widgetPrimaryPaint.typeface = roundedExtraBold
+                widgetPrimaryPaint.textSize = (heroH * 0.175f).coerceIn(22f, 82f)
+                widgetPrimaryPaint.color = withAlpha(primaryText, combinedBodyAlpha)
+                val maskedTitle = context.getString(R.string.notif_new)
+                val clippedTitle = TextUtils.ellipsize(maskedTitle, widgetPrimaryPaint, availW, TextUtils.TruncateAt.END).toString()
+                canvas.drawText(clippedTitle, textLeft, contentBox.top + heroH * 0.56f + bodyDy, widgetPrimaryPaint)
+
+                if (alert.tapToReveal && !alert.isPrivateRedacted) {
+                    val tapLabel = context.getString(R.string.notif_tap_to_view)
+                    val tapSize = (heroH * 0.082f).coerceIn(13f, 36f)
+                    dateHeaderPaint.typeface = roundedBold
+                    dateHeaderPaint.textSize = tapSize
+                    val tw = dateHeaderPaint.measureText(tapLabel)
+                    val pPadX = tapSize * 0.9f
+                    val pH = tapSize * 1.95f
+                    val pW = min(tw + pPadX * 2f, availW)
+                    val pTop = contentBox.top + heroH * 0.65f + bodyDy * 1.2f
+                    val pillBox = FaceBox(textLeft, pTop, textLeft + pW, pTop + pH)
+                    layerBounds.set(pillBox.left - 4f, pillBox.top - 4f, pillBox.right + 4f, pillBox.bottom + 4f)
+                    val tapLayer = canvas.saveLayerAlpha(layerBounds, (combinedBodyAlpha * 255f).toInt().coerceIn(0, 255))
+                    drawGlassCard(
+                        canvas, pillBox, pH * 0.5f,
+                        if (nightRed) Color.argb(80, 255, 59, 48) else if (darkSurface) Color.argb(56, 255, 255, 255) else Color.argb(26, 0, 0, 0),
+                        if (nightRed) Color.argb(46, 255, 59, 48) else if (darkSurface) Color.argb(30, 255, 255, 255) else Color.argb(16, 0, 0, 0),
+                        nightRed, darkSurface,
+                    )
+                    dateHeaderPaint.textAlign = Paint.Align.CENTER
+                    dateHeaderPaint.color = primaryText
+                    val py = pillBox.centerY - (dateHeaderPaint.ascent() + dateHeaderPaint.descent()) * 0.5f
+                    canvas.drawText(tapLabel, pillBox.centerX, py, dateHeaderPaint)
+                    dateHeaderPaint.textAlign = Paint.Align.LEFT
+                    canvas.restoreToCount(tapLayer)
+                }
+            } else {
+                widgetPrimaryPaint.typeface = roundedExtraBold
+                widgetPrimaryPaint.color = withAlpha(primaryText, combinedBodyAlpha)
+                val baseSize = (heroH * 0.165f).coerceIn(22f, 78f)
+                widgetPrimaryPaint.textSize = baseSize
+                val staticLayout = StaticLayout.Builder
+                    .obtain(alert.title, 0, alert.title.length, widgetPrimaryPaint, availW.toInt().coerceAtLeast(1))
+                    .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+                    .setMaxLines(2)
+                    .setEllipsize(TextUtils.TruncateAt.END)
+                    .setIncludePad(false)
+                    .setLineSpacing(0f, 1.12f)
+                    .build()
+                val textTop = contentBox.top + heroH * 0.38f + bodyDy
+                canvas.save()
+                canvas.translate(textLeft, textTop)
+                staticLayout.draw(canvas)
+                canvas.restore()
+            }
         }
 
         // Subtle iOS home-grabber dismiss bar along the card bottom
-        val barW = cardW * 0.12f
-        val barH = (cardH * 0.016f).coerceIn(3f, 7f)
-        val barY = cardBox.bottom - cardH * 0.068f
-        cardFillPaint.shader = null
-        cardFillPaint.color = if (nightRed) Color.argb(82, 255, 69, 58) else if (darkSurface) Color.argb(64, 255, 255, 255) else Color.argb(46, 0, 0, 0)
-        rectScratch.set(cardBox.centerX - barW * 0.5f, barY, cardBox.centerX + barW * 0.5f, barY + barH)
-        canvas.drawRoundRect(rectScratch, barH * 0.5f, barH * 0.5f, cardFillPaint)
+        val barAlpha = bodyP.coerceIn(0f, 1f)
+        if (barAlpha > 0.05f) {
+            val barW = curW * 0.12f
+            val barH = (heroH * 0.016f).coerceIn(3f, 7f)
+            val barY = cardBox.bottom - heroH * 0.068f
+            cardFillPaint.shader = null
+            val barColor = if (nightRed) Color.argb(82, 255, 69, 58) else if (darkSurface) Color.argb(64, 255, 255, 255) else Color.argb(46, 0, 0, 0)
+            cardFillPaint.color = withAlpha(barColor, barAlpha)
+            rectScratch.set(cardBox.centerX - barW * 0.5f, barY, cardBox.centerX + barW * 0.5f, barY + barH)
+            canvas.drawRoundRect(rectScratch, barH * 0.5f, barH * 0.5f, cardFillPaint)
+        }
 
-        canvas.restoreToCount(cardLayer)
+        // Beat 5: Single gossamer diagonal Liquid Glass specular light sheen sweep on entrance
+        if (!exiting && darkSurface && shimmerT > 0.001f && shimmerT < 0.999f) {
+            val bell = kotlin.math.sin(shimmerT * Math.PI).toFloat()
+            val gleamAlpha = ((if (nightRed) 26f else 36f) * bell).toInt().coerceIn(0, 255)
+            if (gleamAlpha > 0) {
+                val bandW = cardBox.width * 0.42f
+                val sweepX = lerp(cardBox.left - bandW, cardBox.right + bandW, easeInOutCubic(shimmerT))
+                val gleamColor = if (nightRed) Color.argb(gleamAlpha, 255, 95, 85) else Color.argb(gleamAlpha, 255, 255, 255)
+                cardHighlightPaint.shader = LinearGradient(
+                    sweepX - bandW * 0.5f, cardBox.top,
+                    sweepX + bandW * 0.5f, cardBox.bottom,
+                    intArrayOf(Color.TRANSPARENT, gleamColor, Color.TRANSPARENT),
+                    floatArrayOf(0f, 0.5f, 1f),
+                    Shader.TileMode.CLAMP,
+                )
+                canvas.drawRect(cardBox.left, cardBox.top, cardBox.right, cardBox.bottom, cardHighlightPaint)
+                cardHighlightPaint.shader = null
+            }
+        }
+
+        canvas.restore() // clipPath
+        canvas.restoreToCount(shellLayer)
+    }
+
+    // -------------------------------------------------------------------------
+    // Apple Physics Spring & Choreography Curve Helpers (Pure Math)
+    // -------------------------------------------------------------------------
+
+    private fun subTimeline(t: Float, start: Float, end: Float): Float =
+        ((t - start) / (end - start).coerceAtLeast(0.001f)).coerceIn(0f, 1f)
+
+    private fun easeOutCubic(t: Float): Float {
+        val u = 1f - t.coerceIn(0f, 1f)
+        return 1f - u * u * u
+    }
+
+    private fun easeInOutCubic(t: Float): Float {
+        val x = t.coerceIn(0f, 1f)
+        return if (x < 0.5f) 4f * x * x * x else 1f - ((-2f * x + 2f) * (-2f * x + 2f) * (-2f * x + 2f)) * 0.5f
+    }
+
+    private fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
+
+    private fun rubberBand(delta: Float, maxLimit: Float): Float {
+        if (maxLimit <= 0f) return 0f
+        val sign = if (delta < 0f) -1f else 1f
+        val absD = kotlin.math.abs(delta)
+        val banded = maxLimit * (1f - 1f / (1f + absD / (maxLimit * 1.45f)))
+        return sign * banded
+    }
+
+    /** Analytical Apple CASpringAnimation-style damped harmonic oscillator normalized to [0, 1]. */
+    private fun springCurve(t: Float, damping: Float, frequency: Float): Float {
+        val x = t.coerceIn(0f, 1f)
+        if (x <= 0f) return 0f
+        if (x >= 1f) return 1f
+        val omega = frequency * (2.0 * Math.PI)
+        fun eval(s: Double): Double {
+            val decay = kotlin.math.exp(-damping * omega * s)
+            return if (damping < 1f) {
+                val wd = omega * kotlin.math.sqrt((1f - damping * damping).toDouble())
+                1.0 - decay * (kotlin.math.cos(wd * s) + (damping * omega / wd) * kotlin.math.sin(wd * s))
+            } else {
+                1.0 - decay * (1.0 + omega * s)
+            }
+        }
+        val endVal = eval(1.0).coerceAtLeast(0.001)
+        return (eval(x.toDouble()) / endVal).toFloat()
     }
 
     private fun drawSquircleAppIcon(

@@ -182,6 +182,18 @@ class StandbyActivity : ComponentActivity() {
                     enterInteractive(flashHint = false)
                 }
 
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.x - touchDownX
+                    val dy = event.y - touchDownY
+                    if (abs(dx) > 12f || abs(dy) > 12f) {
+                        clockView.setInteractiveDrag(dx, dy)
+                    }
+                }
+
+                MotionEvent.ACTION_CANCEL -> {
+                    clockView.releaseInteractiveDrag()
+                }
+
                 MotionEvent.ACTION_UP -> {
                     val dx = event.x - touchDownX
                     val dy = event.y - touchDownY
@@ -190,18 +202,22 @@ class StandbyActivity : ComponentActivity() {
                     val currentAlert = activeAlert
 
                     if (currentAlert != null) {
-                        // Notification takeover is visible: swipe dismisses; tap reveals or dismisses.
+                        // Notification takeover is visible: swipe dismisses; tap reveals or dismisses;
+                        // partial drag springs smoothly back to center.
                         if (absDy > SWIPE_THRESHOLD_PX || absDx > SWIPE_THRESHOLD_PX) {
                             swipeConsumed = true
                             lastTapAt = 0L
                             dismissNotificationAlert()
                         } else if (absDx < TAP_SLOP_PX && absDy < TAP_SLOP_PX) {
+                            clockView.releaseInteractiveDrag()
                             lastTapAt = 0L
                             if (currentAlert.tapToReveal && !currentAlert.revealed && !currentAlert.isPrivateRedacted) {
                                 showNotificationAlert(currentAlert.copy(revealed = true))
                             } else {
                                 dismissNotificationAlert()
                             }
+                        } else {
+                            clockView.releaseInteractiveDrag()
                         }
                     } else if (absDy > SWIPE_THRESHOLD_PX && absDy > absDx * 1.35f) {
                         swipeConsumed = true
@@ -212,6 +228,7 @@ class StandbyActivity : ComponentActivity() {
                         lastTapAt = 0L
                         cycleIosPalette(step = if (dx < 0f) 1 else -1)
                     } else if (!swipeConsumed && absDx < TAP_SLOP_PX && absDy < TAP_SLOP_PX) {
+                        clockView.releaseInteractiveDrag()
                         if (clockView.hitTestUnreadPill(event.x, event.y)) {
                             lastTapAt = 0L
                             openLatestNotificationAlert()
@@ -226,6 +243,8 @@ class StandbyActivity : ComponentActivity() {
                                 clockView.flashHint()
                             }
                         }
+                    } else {
+                        clockView.releaseInteractiveDrag()
                     }
                 }
             }
