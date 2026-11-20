@@ -2081,7 +2081,7 @@ class ClockView @JvmOverloads constructor(
                 }
                 else -> c.primary
             }
-            val textW = widgetSecondaryPaint.measureText(shortLabel).coerceAtMost(maxWidth * 0.45f)
+            val textW = (widgetSecondaryPaint.measureText(shortLabel) + 6f).coerceAtMost(maxWidth * 0.52f)
             val glyphW = if (c.glyph != WidgetGlyph.NONE) iconSize + iconGap else 0f
             val pw = padX * 2f + glyphW + textW
             val nextUsed = usedW + (if (specs.isNotEmpty()) pillGap else 0f) + pw
