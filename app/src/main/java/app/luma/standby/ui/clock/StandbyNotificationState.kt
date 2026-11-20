@@ -50,10 +50,22 @@ data class StandbyNotificationAlert(
     val tapToReveal: Boolean = false,
     val revealed: Boolean = false,
     val isPrivateRedacted: Boolean = false,
+    val expandImmediately: Boolean = false,
 ) {
     /** True when the alert masks its content until the user explicitly taps to reveal. */
     val isMasked: Boolean
         get() = isPrivateRedacted || (tapToReveal && !revealed)
+
+    /** True when there is rich message content to glide into after the Stage-1 iOS Hero arrival. */
+    val hasDetailPreview: Boolean
+        get() {
+            if (isMasked) return false
+            val trimmedTitle = title.trim()
+            val cleanBody = body?.trim()?.takeIf { it.isNotEmpty() && !it.equals(trimmedTitle, ignoreCase = true) }
+            if (cleanBody != null) return true
+            val titleMatchesApp = trimmedTitle.equals(appLabel.trim(), ignoreCase = true)
+            return !titleMatchesApp && trimmedTitle.length > 18
+        }
 }
 
 /** Sleek top-bar Liquid Glass indicator reminding the user of active unread notifications. */

@@ -112,6 +112,7 @@ class DebugSettingsReceiver : BroadcastReceiver() {
                 val pkg = intent.getStringExtra("mockPkg")
                 val count = intent.getIntExtra("mockCount", 1).coerceAtLeast(1)
                 val tapReveal = intent.getBooleanExtra("mockTapReveal", false)
+                val expandNow = intent.getBooleanExtra("mockExpand", false)
                 DebugAlertBus.emit(
                     StandbyNotificationAlert(
                         appLabel = appLabel,
@@ -122,6 +123,7 @@ class DebugSettingsReceiver : BroadcastReceiver() {
                         tapToReveal = tapReveal,
                         revealed = false,
                         isPrivateRedacted = title.equals(appLabel, ignoreCase = true) && body == null,
+                        expandImmediately = expandNow,
                     ),
                 )
             }

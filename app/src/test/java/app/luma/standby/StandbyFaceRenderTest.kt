@@ -136,7 +136,7 @@ class StandbyFaceRenderTest {
         assertTrue("Solar Liquid Glass draws pixels", countNonBlack(solarBmp) > 50_000)
         savePng(solarBmp, File(snapshotDir, "06_solar_liquid_glass.png"))
 
-        // 7. Full-Screen iOS StandBy Notification Alert (2-level Sender + Preview Body)
+        // 7. Full-Screen iOS StandBy Notification Alert (Stage 2 borderless Sender + Preview Body)
         val alertBmp = renderClock(
             width = 1600,
             height = 720,
@@ -148,6 +148,7 @@ class StandbyFaceRenderTest {
                 body = "张三：10 分钟后评审新版待机表盘，记得带上小米 17",
                 unreadCount = 3,
                 tapToReveal = false,
+                expandImmediately = true,
             ),
         )
         assertTrue("Notification takeover renders clearly", countNonBlack(alertBmp) > 40_000)
@@ -270,6 +271,7 @@ class StandbyFaceRenderTest {
                 body = "张三：马上评审",
                 key = "k-1",
                 unreadCount = 3,
+                expandImmediately = true,
             ),
         )
         view.measure(
@@ -280,12 +282,12 @@ class StandbyFaceRenderTest {
         val bmp = Bitmap.createBitmap(1280, 590, Bitmap.Config.ARGB_8888)
         view.draw(Canvas(bmp))
 
-        // Scan top-right region of hero card to verify both Clear and Clear-All hit targets exist and don't overlap.
+        // Scan lower-right Stage-2 action region to verify both Clear and Clear-All hit targets exist and don't overlap.
         var clearHits = 0
         var clearAllHits = 0
         var overlapHits = 0
-        for (y in 120..300 step 4) {
-            for (x in 600..1120 step 4) {
+        for (y in 430..550 step 4) {
+            for (x in 650..1180 step 4) {
                 val c = view.hitTestAlertClear(x.toFloat(), y.toFloat())
                 val a = view.hitTestAlertClearAll(x.toFloat(), y.toFloat())
                 if (c) clearHits++
@@ -298,8 +300,8 @@ class StandbyFaceRenderTest {
         assertTrue("Clear and Clear-All hit targets should remain well separated", overlapHits < 15)
 
         view.setActiveAlert(null, AlertExitMode.FLING_LEFT)
-        assertFalse(view.hitTestAlertClear(1000f, 220f))
-        assertFalse(view.hitTestAlertClearAll(900f, 220f))
+        assertFalse(view.hitTestAlertClear(1060f, 490f))
+        assertFalse(view.hitTestAlertClearAll(940f, 490f))
     }
 
     @Test
@@ -474,6 +476,58 @@ class StandbyFaceRenderTest {
         digits.drawTime(sc, "08:92", 90f, 390f, 270f, pink)
         digits.drawTime(sc, "14:58", 860f, 390f, 270f, pink)
         savePng(specimenBmp, File(outDir, "16_poster_digits_specimen.png"))
+    }
+
+    @Test
+    fun refinedIosStandbyNotificationsMatchReference() {
+        val outDir = File(System.getProperty("user.home"), "snapshots").apply { mkdirs() }
+        val posterSettings = LumaSettings(
+            themeId = ThemePresets.iosPosterTeal.id,
+            widgetPlacements = listOf(
+                StoredPlacement("weather", "TOP_RIGHT"),
+                StoredPlacement("alarm", "BOTTOM_RIGHT"),
+            ),
+        )
+        val posterTiles = WidgetRenderer.tiles(
+            settings = posterSettings,
+            data = WidgetData(
+                weather = WeatherInfo(
+                    temperatureC = 5,
+                    condition = WeatherCondition.CLOUDY,
+                    updatedAtMillis = System.currentTimeMillis(),
+                    city = "北京",
+                ),
+                nextAlarm = AlarmInfo(hour = 8, minute = 40),
+            ),
+            context = context,
+        )
+
+        // Stage 1: Exact iOS StandBy arrival — blurred Poster Teal clock + centered Mail squircle + "Latent Space" + "1个通知"
+        val stage1Alert = StandbyNotificationAlert(
+            appLabel = "邮件",
+            title = "Latent Space",
+            body = null,
+            unreadCount = 1,
+            tapToReveal = false,
+        )
+        assertFalse("Short title without body stays on clean Stage 1 Hero", stage1Alert.hasDetailPreview)
+        val stage1Bmp = renderClock(1600, 720, ThemePresets.iosPosterTeal, posterTiles, alert = stage1Alert)
+        savePng(stage1Bmp, File(outDir, "17_ios_notif_stage1_poster_teal.png"))
+        assertTrue("Stage 1 Hero notification renders visibly", countNonBlack(stage1Bmp) > 80_000)
+
+        // Stage 2: Borderless reading view over blurred Poster Teal clock (icon glided up-left + full message + quiet Clear pills)
+        val stage2Alert = StandbyNotificationAlert(
+            appLabel = "微信",
+            title = "产品设计群",
+            body = "张三：10 分钟后评审新版待机表盘，记得带上小米 17",
+            unreadCount = 3,
+            tapToReveal = false,
+            expandImmediately = true,
+        )
+        assertTrue("Message with preview body enables smooth Stage 2 glide", stage2Alert.hasDetailPreview)
+        val stage2Bmp = renderClock(1600, 720, ThemePresets.iosPosterTeal, posterTiles, alert = stage2Alert)
+        savePng(stage2Bmp, File(outDir, "18_ios_notif_stage2_detail.png"))
+        assertTrue("Stage 2 borderless detail notification renders visibly", countNonBlack(stage2Bmp) > 80_000)
     }
 
     private fun renderClock(

@@ -191,6 +191,8 @@
     <string name="notif_new">New Notification</string>
     <string name="notif_tap_to_view">Tap to view</string>
     <string name="notif_count_pill">%1$d notifications</string>
+    <string name="notif_count_hero_one">1 Notification</string>
+    <string name="notif_count_hero">%1$d Notifications</string>
     <string name="notif_more_badge">+%1$d more</string>
     <string name="notif_clear">Clear</string>
     <string name="notif_clear_all">Clear %1$d</string>

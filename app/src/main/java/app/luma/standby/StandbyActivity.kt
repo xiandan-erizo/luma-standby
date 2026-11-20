@@ -272,6 +272,11 @@ class StandbyActivity : ComponentActivity() {
                                     clearAllNotifications(AlertExitMode.CLEAR_DISSOLVE)
                                 currentAlert.tapToReveal && !currentAlert.revealed && !currentAlert.isPrivateRedacted ->
                                     showNotificationAlert(currentAlert.copy(revealed = true))
+                                clockView.canExpandAlertDetailNow() -> {
+                                    clockView.expandAlertDetailNow()
+                                    mainHandler.removeCallbacks(dismissAlertRunnable)
+                                    mainHandler.postDelayed(dismissAlertRunnable, ALERT_VISIBLE_MS)
+                                }
                                 else ->
                                     dismissNotificationAlert(AlertExitMode.TUCK_TO_PILL)
                             }
@@ -556,6 +561,7 @@ class StandbyActivity : ComponentActivity() {
         latestNotifications = notifications
         val top = notifications.firstOrNull()
         if (top == null) {
+            if (activeAlert?.key?.startsWith("debug-") == true) return
             clockView.setUnreadSummary(null)
             dismissNotificationAlert()
             alertTracker.onSnapshot(emptyList())
@@ -579,7 +585,7 @@ class StandbyActivity : ComponentActivity() {
     private fun openLatestNotificationAlert() {
         val top = latestNotifications.firstOrNull() ?: return
         collapseLiveActivity()
-        showNotificationAlert(buildAlert(top, latestNotifications.size))
+        showNotificationAlert(buildAlert(top, latestNotifications.size, expandImmediately = true))
     }
 
     private fun expandCurrentLiveActivity() {
@@ -613,7 +619,11 @@ class StandbyActivity : ComponentActivity() {
         enterInteractive(flashHint = false)
     }
 
-    private fun buildAlert(info: NotificationInfo, count: Int): StandbyNotificationAlert {
+    private fun buildAlert(
+        info: NotificationInfo,
+        count: Int,
+        expandImmediately: Boolean = false,
+    ): StandbyNotificationAlert {
         val redacted = info.title.equals(info.appLabel, ignoreCase = true) && info.body.isNullOrBlank()
         return StandbyNotificationAlert(
             appLabel = info.appLabel,
@@ -625,6 +635,7 @@ class StandbyActivity : ComponentActivity() {
             tapToReveal = settings.notificationTapToReveal,
             revealed = false,
             isPrivateRedacted = redacted,
+            expandImmediately = expandImmediately,
         )
     }
 

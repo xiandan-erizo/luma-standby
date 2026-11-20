@@ -191,6 +191,8 @@
     <string name="notif_new">新通知</string>
     <string name="notif_tap_to_view">轻点查看</string>
     <string name="notif_count_pill">%1$d 条通知</string>
+    <string name="notif_count_hero_one">1个通知</string>
+    <string name="notif_count_hero">%1$d个通知</string>
     <string name="notif_more_badge">还有 %1$d 条</string>
     <string name="notif_clear">清除</string>
     <string name="notif_clear_all">清空 %1$d 条</string>
