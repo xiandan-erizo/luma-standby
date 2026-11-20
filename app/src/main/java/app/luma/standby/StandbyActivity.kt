@@ -22,7 +22,9 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import app.luma.standby.domain.NightMode
 import app.luma.standby.domain.model.DisplayMode
+import app.luma.standby.domain.model.FaceStyle
 import app.luma.standby.domain.model.LumaSettings
+import app.luma.standby.domain.theme.ThemeEditing
 import app.luma.standby.domain.theme.ThemeRepository
 import app.luma.standby.domain.theme.currentTheme
 import app.luma.standby.platform.battery.BatteryController
@@ -65,6 +67,9 @@ class StandbyActivity : ComponentActivity() {
     private var stopObservingBattery: (() -> Unit)? = null
     private var settings: LumaSettings = LumaSettings()
     private var lastTapAt = 0L
+    private var touchDownX = 0f
+    private var touchDownY = 0f
+    private var swipeConsumed = false
     private val widgetTicks = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     private var receiverRegistered = false
     private val screenEvents = object : BroadcastReceiver() {
@@ -127,20 +132,38 @@ class StandbyActivity : ComponentActivity() {
             }
         }
 
-        // Hand-rolled double tap instead of GestureDetector: the detector's window
-        // is 300 ms and it silently drops taps when the first one lands while the
-        // window is still settling. A clock face has no other competing gestures.
+        // Hand-rolled gestures: vertical swipe cycles iOS StandBy faces (just like
+        // swiping up/down on iPhone StandBy), while a clean double-tap exits.
         clockView.isClickable = true
         clockView.setOnTouchListener { _, event ->
-            if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-                enterInteractive()
-                val now = event.eventTime
-                if (now - lastTapAt <= DOUBLE_TAP_WINDOW_MS) {
-                    lastTapAt = 0L
-                    clockView.performClick()
-                    finish()
-                } else {
-                    lastTapAt = now
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    touchDownX = event.x
+                    touchDownY = event.y
+                    swipeConsumed = false
+                    enterInteractive(flashHint = false)
+                }
+
+                MotionEvent.ACTION_UP -> {
+                    val dx = event.x - touchDownX
+                    val dy = event.y - touchDownY
+                    val absDx = kotlin.math.abs(dx)
+                    val absDy = kotlin.math.abs(dy)
+                    if (absDy > SWIPE_THRESHOLD_PX && absDy > absDx * 1.35f) {
+                        swipeConsumed = true
+                        lastTapAt = 0L
+                        cycleFaceStyle(step = if (dy < 0f) 1 else -1)
+                    } else if (!swipeConsumed && absDx < TAP_SLOP_PX && absDy < TAP_SLOP_PX) {
+                        val now = event.eventTime
+                        if (now - lastTapAt <= DOUBLE_TAP_WINDOW_MS) {
+                            lastTapAt = 0L
+                            clockView.performClick()
+                            finish()
+                        } else {
+                            lastTapAt = now
+                            clockView.flashHint()
+                        }
+                    }
                 }
             }
             true
@@ -255,11 +278,33 @@ class StandbyActivity : ComponentActivity() {
     }
 
     /** A touch buys a short window of normal refresh rate, then we idle again. */
-    private fun enterInteractive() {
-        clockView.flashHint()
+    private fun enterInteractive(flashHint: Boolean = true) {
+        if (flashHint) clockView.flashHint()
         applyRefreshIntent(RefreshState.INTERACTIVE)
         mainHandler.removeCallbacks(returnToIdle)
         mainHandler.postDelayed(returnToIdle, IDLE_TIMEOUT_MS)
+    }
+
+    private fun cycleFaceStyle(step: Int) {
+        val styles = FaceStyle.entries
+        val currentStyle = settings.currentTheme().faceStyle
+        val idx = styles.indexOf(currentStyle).coerceAtLeast(0)
+        val nextStyle = styles[(idx + step + styles.size) % styles.size]
+        val label = getString(
+            when (nextStyle) {
+                FaceStyle.ANALOG -> R.string.style_analog
+                FaceStyle.SPLIT -> R.string.style_split
+                FaceStyle.FLOAT -> R.string.style_float
+                FaceStyle.SOLAR -> R.string.style_solar
+            },
+        )
+        clockView.flashBanner(label)
+        lifecycleScope.launch {
+            repository.update { current ->
+                val updated = ThemeEditing.withFaceStyle(current, nextStyle, System.currentTimeMillis())
+                ThemeEditing.upsert(current, updated)
+            }
+        }
     }
 
     private fun baselineState(): RefreshState = when {
@@ -309,5 +354,7 @@ class StandbyActivity : ComponentActivity() {
 
         /** Generous enough for a deliberate double tap, short enough not to fire on two separate taps. */
         const val DOUBLE_TAP_WINDOW_MS = 600L
+        const val SWIPE_THRESHOLD_PX = 96f
+        const val TAP_SLOP_PX = 56f
     }
 }

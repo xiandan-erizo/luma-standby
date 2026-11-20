@@ -181,6 +181,8 @@
     <string name="city_chengdu">成都</string>
     <string name="city_hangzhou">杭州</string>
     <string name="font_display">圓潤大字</string>
+    <string name="style_analog">類比錶盤</string>
+    <string name="style_split">雙欄數字</string>
     <string name="style_float">Float 疊層</string>
-    <string name="style_split">經典雙欄</string>
+    <string name="style_solar">液態玻璃</string>
 </resources>

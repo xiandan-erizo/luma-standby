@@ -19,12 +19,12 @@ object ThemePresets {
     private fun preset(palette: LumaTheme, font: FontChoice): LumaTheme =
         palette.copy(font = font, builtIn = true)
 
-    val iosFloatBlue = preset(PalettePresets.iosFloatBlue, FontChoice.DISPLAY)
-    val iosCoral = preset(PalettePresets.iosCoral, FontChoice.DISPLAY)
-    val iosPinkCyan = preset(PalettePresets.iosPinkCyan, FontChoice.DISPLAY)
-    val iosMint = preset(PalettePresets.iosMint, FontChoice.DISPLAY)
-    val iosSolar = preset(PalettePresets.iosSolar, FontChoice.DISPLAY)
-    val iosNightRed = preset(PalettePresets.iosNightRed, FontChoice.DISPLAY)
+    val iosFloatBlue = preset(PalettePresets.iosFloatBlue, FontChoice.ROUNDED)
+    val iosCoral = preset(PalettePresets.iosCoral, FontChoice.ROUNDED)
+    val iosPinkCyan = preset(PalettePresets.iosPinkCyan, FontChoice.ROUNDED)
+    val iosMint = preset(PalettePresets.iosMint, FontChoice.ROUNDED)
+    val iosSolar = preset(PalettePresets.iosSolar, FontChoice.ROUNDED)
+    val iosNightRed = preset(PalettePresets.iosNightRed, FontChoice.ROUNDED)
 
     val duskTeal = preset(PalettePresets.dusk, FontChoice.DISPLAY)
     val petrol = preset(PalettePresets.petrol, FontChoice.DISPLAY)
@@ -48,7 +48,8 @@ object ThemePresets {
     val coolGrey = preset(PalettePresets.coolGrey, FontChoice.DISPLAY)
 
     val all: List<LumaTheme> = PalettePresets.all.map { palette ->
-        preset(palette, FontChoice.DISPLAY)
+        val defaultFont = if (palette in PalettePresets.groupIos) FontChoice.ROUNDED else FontChoice.DISPLAY
+        preset(palette, defaultFont)
     }
 
     /** Ids that older settings or exported JSON may still carry. */

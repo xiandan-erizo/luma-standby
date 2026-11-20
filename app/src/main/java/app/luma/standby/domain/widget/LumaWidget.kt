@@ -91,6 +91,7 @@ enum class WidgetGlyph {
     BATTERY,
     BOLT,
     SUN,
+    PARTLY_CLOUDY,
     CLOUD,
     RAIN,
     SNOW,

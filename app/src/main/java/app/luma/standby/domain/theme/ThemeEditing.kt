@@ -62,7 +62,12 @@ object ThemeEditing {
     fun withFaceStyle(settings: LumaSettings, style: FaceStyle, seed: Long): LumaTheme {
         val base = settings.currentTheme()
         if (base.faceStyle == style && !base.builtIn) return base
-        val styleLabel = if (style == FaceStyle.FLOAT) "Float" else "Split"
+        val styleLabel = when (style) {
+            FaceStyle.ANALOG -> "Analog"
+            FaceStyle.SPLIT -> "Split"
+            FaceStyle.FLOAT -> "Float"
+            FaceStyle.SOLAR -> "Solar"
+        }
         val forked = if (base.builtIn) {
             base.copy(id = customId(seed), name = base.name + " " + styleLabel, builtIn = false)
         } else {

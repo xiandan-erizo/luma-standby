@@ -4,8 +4,6 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.Path
 import android.view.View
 import androidx.test.core.app.ApplicationProvider
 import app.luma.standby.domain.model.FaceStyle
@@ -22,7 +20,6 @@ import app.luma.standby.domain.widget.WidgetData
 import app.luma.standby.platform.widgets.WidgetRenderer
 import app.luma.standby.ui.clock.ClockView
 import app.luma.standby.ui.clock.FaceLayout
-import app.luma.standby.ui.clock.IosNumerals
 import app.luma.standby.ui.clock.WidgetTile
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -43,40 +40,10 @@ class StandbyFaceRenderTest {
     private val context: Context = ApplicationProvider.getApplicationContext()
 
     @Test
-    fun floatAndSplitFacesRenderCleanlyAndExportSnapshots() {
+    fun allFourIosStandByFacesRenderCleanlyAndExportSnapshots() {
         val snapshotDir = File(System.getProperty("user.home"), "snapshots").apply { mkdirs() }
 
-        // 1. Float Ocean (no widgets)
-        val floatBmp = renderClock(
-            width = 1600,
-            height = 720,
-            theme = ThemePresets.iosFloatBlue,
-            tiles = emptyList(),
-        )
-        assertTrue("Float face draws bright duo-tone pixels on pure black", countNonBlack(floatBmp) > 50_000)
-        savePng(floatBmp, File(snapshotDir, "float_ocean.png"))
-
-        // 2. Float Flamingo
-        val flamingoBmp = renderClock(
-            width = 1600,
-            height = 720,
-            theme = ThemePresets.iosPinkCyan,
-            tiles = emptyList(),
-        )
-        savePng(flamingoBmp, File(snapshotDir, "float_flamingo.png"))
-
-        // 3. Split Coral + Calendar Hero (no widgets)
-        val splitCalendarBmp = renderClock(
-            width = 1600,
-            height = 720,
-            theme = ThemePresets.iosCoral,
-            tiles = emptyList(),
-        )
-        assertTrue("Split calendar face draws clock + calendar hero", countNonBlack(splitCalendarBmp) > 30_000)
-        savePng(splitCalendarBmp, File(snapshotDir, "split_coral_calendar.png"))
-
-        // 4. Split Mint + Graphical Widgets (Weather Hero + Circular Battery Ring + Alarm)
-        val widgetSettings = LumaSettings(
+        val fullSettings = LumaSettings(
             themeId = "ios-coral",
             widgetPlacements = listOf(
                 StoredPlacement("weather", "TOP_RIGHT"),
@@ -84,11 +51,11 @@ class StandbyFaceRenderTest {
                 StoredPlacement("alarm", "BOTTOM_RIGHT"),
             ),
         )
-        val tiles = WidgetRenderer.tiles(
-            settings = widgetSettings,
+        val sampleTiles = WidgetRenderer.tiles(
+            settings = fullSettings,
             data = WidgetData(
                 weather = WeatherInfo(
-                    temperatureC = 18,
+                    temperatureC = 7,
                     condition = WeatherCondition.CLEAR,
                     updatedAtMillis = System.currentTimeMillis(),
                     city = "北京",
@@ -98,41 +65,56 @@ class StandbyFaceRenderTest {
             ),
             context = context,
         )
-        assertEquals(3, tiles.size)
-        val splitWidgetsBmp = renderClock(
-            width = 1600,
-            height = 720,
-            theme = ThemePresets.iosCoral,
-            tiles = tiles,
-        )
-        assertTrue("Split widgets face draws clock and graphical tiles", countNonBlack(splitWidgetsBmp) > 40_000)
-        savePng(splitWidgetsBmp, File(snapshotDir, "split_widgets_three.png"))
+        assertEquals(3, sampleTiles.size)
 
-        // 5. Split with 2 hero widgets (Weather + Battery Ring — classic 2-card StandBy)
-        val twoTiles = tiles.take(2)
-        val splitTwoWidgetsBmp = renderClock(
-            width = 1600,
-            height = 720,
-            theme = ThemePresets.iosCoral,
-            tiles = twoTiles,
-        )
-        savePng(splitTwoWidgetsBmp, File(snapshotDir, "split_widgets_two.png"))
+        // 1. Analog + Calendar Hero Square (classic iOS StandBy)
+        val analogCalBmp = renderClock(1600, 720, ThemePresets.iosCoral, emptyList())
+        assertTrue("Analog + Calendar draws pixels", countNonBlack(analogCalBmp) > 40_000)
+        savePng(analogCalBmp, File(snapshotDir, "01_analog_calendar.png"))
 
-        // 6. Digit specimen sheet (0..9 in both Float heavy and Split rounded)
-        val specimenBmp = renderDigitSpecimen(1600, 640)
-        savePng(specimenBmp, File(snapshotDir, "digits_specimen.png"))
+        // 2. Analog + Weather Hero Square (1-widget full square sky card)
+        val analogWeatherBmp = renderClock(1600, 720, ThemePresets.iosCoral, sampleTiles.take(1))
+        assertTrue("Analog + Weather hero draws pixels", countNonBlack(analogWeatherBmp) > 60_000)
+        savePng(analogWeatherBmp, File(snapshotDir, "02_analog_weather_hero.png"))
+
+        // 3. Split Stacked Digital + 2-Card Stack (Weather + Battery Ring)
+        val splitTwoBmp = renderClock(1600, 720, ThemePresets.iosMint, sampleTiles.take(2))
+        assertTrue("Split + 2 cards draws pixels", countNonBlack(splitTwoBmp) > 60_000)
+        savePng(splitTwoBmp, File(snapshotDir, "03_split_two_widgets.png"))
+
+        // 4. Float Ocean (fullscreen Fredoka Bold, verify NO dark-alpha bug across multiple draws!)
+        val floatBmp = renderClock(1600, 720, ThemePresets.iosFloatBlue, sampleTiles.take(1), drawPasses = 2)
+        assertTrue("Float face stays bright across repeated draws", countBright(floatBmp) > 40_000)
+        savePng(floatBmp, File(snapshotDir, "04_float_ocean.png"))
+
+        // 5. Float Flamingo
+        val flamingoBmp = renderClock(1600, 720, ThemePresets.iosPinkCyan, emptyList(), drawPasses = 2)
+        assertTrue("Float Flamingo stays bright", countBright(flamingoBmp) > 40_000)
+        savePng(flamingoBmp, File(snapshotDir, "05_float_flamingo.png"))
+
+        // 6. Liquid Glass Solar Horizon (iOS 26/27 style)
+        val solarBmp = renderClock(1600, 720, ThemePresets.iosSolar, sampleTiles.take(2))
+        assertTrue("Solar Liquid Glass draws pixels", countNonBlack(solarBmp) > 50_000)
+        savePng(solarBmp, File(snapshotDir, "06_solar_liquid_glass.png"))
+
+        // 7. Night Red (Analog + Calendar, zero blue light)
+        val nightBmp = renderClock(1600, 720, ThemePresets.iosNightRed, emptyList())
+        assertTrue("Night Red draws red pixels", countNonBlack(nightBmp) > 25_000)
+        savePng(nightBmp, File(snapshotDir, "07_night_red.png"))
     }
 
     @Test
     fun faceStyleTogglesIndependentlyAndLayoutsNeverCollide() {
         val initial = LumaSettings(themeId = "ios-coral")
-        val switched = ThemeEditing.withFaceStyle(initial, FaceStyle.FLOAT, 77L)
-        assertEquals(FaceStyle.FLOAT, switched.faceStyle)
-        assertFalse(switched.builtIn)
+        for (style in FaceStyle.entries) {
+            val switched = ThemeEditing.withFaceStyle(initial, style, 77L)
+            assertEquals(style, switched.faceStyle)
+            assertFalse(switched.builtIn)
+        }
 
-        val floatEmpty = FaceLayout.create(2400f, 1080f, withWidgets = false, style = FaceStyle.FLOAT)
-        assertTrue(floatEmpty.clock.width > 2000f)
-        assertTrue(floatEmpty.date.bottom < floatEmpty.clock.top)
+        val floatFull = FaceLayout.create(2400f, 1080f, withWidgets = true, style = FaceStyle.FLOAT)
+        assertTrue(floatFull.clock.width > 2000f)
+        assertTrue(floatFull.date.bottom < floatFull.clock.top)
     }
 
     private fun renderClock(
@@ -140,6 +122,7 @@ class StandbyFaceRenderTest {
         height: Int,
         theme: LumaTheme,
         tiles: List<WidgetTile>,
+        drawPasses: Int = 1,
     ): Bitmap {
         val view = ClockView(context)
         view.applyState(
@@ -157,46 +140,11 @@ class StandbyFaceRenderTest {
         view.layout(0, 0, width, height)
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
-        view.draw(canvas)
+        repeat(drawPasses) {
+            bitmap.eraseColor(Color.BLACK)
+            view.draw(canvas)
+        }
         return bitmap
-    }
-
-    private fun renderDigitSpecimen(width: Int, height: Int): Bitmap {
-        val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bmp)
-        canvas.drawColor(Color.BLACK)
-        val path = Path()
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeCap = Paint.Cap.ROUND
-            strokeJoin = Paint.Join.ROUND
-        }
-        val digits = "0123456789"
-        val margin = 48f
-        val cellW = (width - margin * 2f) / 10f
-
-        // Row 1: Float bubbly stroke
-        digits.forEachIndexed { idx, ch ->
-            val left = margin + idx * cellW + cellW * 0.08f
-            val right = margin + (idx + 1) * cellW - cellW * 0.08f
-            val sw = (right - left) * 0.28f
-            paint.strokeWidth = sw
-            paint.color = if (idx % 2 == 0) Color.parseColor("#0A84FF") else Color.parseColor("#5AC8FA")
-            IosNumerals.buildDigitPath(path, ch, left, 48f, right, 288f, sw)
-            canvas.drawPath(path, paint)
-        }
-
-        // Row 2: Split crisp digital stroke
-        digits.forEachIndexed { idx, ch ->
-            val left = margin + idx * cellW + cellW * 0.12f
-            val right = margin + (idx + 1) * cellW - cellW * 0.12f
-            val sw = (right - left) * 0.22f
-            paint.strokeWidth = sw
-            paint.color = Color.WHITE
-            IosNumerals.buildDigitPath(path, ch, left, 352f, right, 592f, sw)
-            canvas.drawPath(path, paint)
-        }
-        return bmp
     }
 
     private fun countNonBlack(bitmap: Bitmap): Int {
@@ -204,7 +152,18 @@ class StandbyFaceRenderTest {
         for (y in 0 until bitmap.height step 2) {
             for (x in 0 until bitmap.width step 2) {
                 val px = bitmap.getPixel(x, y)
-                if (Color.red(px) > 8 || Color.green(px) > 8 || Color.blue(px) > 8) count++
+                if (Color.red(px) > 10 || Color.green(px) > 10 || Color.blue(px) > 10) count++
+            }
+        }
+        return count * 4
+    }
+
+    private fun countBright(bitmap: Bitmap): Int {
+        var count = 0
+        for (y in 0 until bitmap.height step 2) {
+            for (x in 0 until bitmap.width step 2) {
+                val px = bitmap.getPixel(x, y)
+                if (Color.red(px) > 120 || Color.green(px) > 120 || Color.blue(px) > 120) count++
             }
         }
         return count * 4

@@ -1,5 +1,6 @@
 package app.luma.standby.ui
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -70,17 +71,17 @@ fun PreviewScreen(
 
         Spacer(Modifier.height(12.dp))
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(
-                selected = theme.faceStyle == FaceStyle.FLOAT,
-                onClick = { onStyleChange(FaceStyle.FLOAT) },
-                label = { Text(stringResource(R.string.style_float)) },
-            )
-            FilterChip(
-                selected = theme.faceStyle == FaceStyle.SPLIT,
-                onClick = { onStyleChange(FaceStyle.SPLIT) },
-                label = { Text(stringResource(R.string.style_split)) },
-            )
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            FaceStyle.entries.forEach { style ->
+                FilterChip(
+                    selected = theme.faceStyle == style,
+                    onClick = { onStyleChange(style) },
+                    label = { Text(styleLabel(style)) },
+                )
+            }
         }
 
         Spacer(Modifier.height(8.dp))
@@ -110,6 +111,16 @@ fun PreviewScreen(
         )
     }
 }
+
+@Composable
+private fun styleLabel(style: FaceStyle): String = stringResource(
+    when (style) {
+        FaceStyle.ANALOG -> R.string.style_analog
+        FaceStyle.SPLIT -> R.string.style_split
+        FaceStyle.FLOAT -> R.string.style_float
+        FaceStyle.SOLAR -> R.string.style_solar
+    },
+)
 
 @Composable
 private fun modeLabel(mode: DisplayMode): String = stringResource(

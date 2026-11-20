@@ -181,6 +181,8 @@
     <string name="city_chengdu">Chengdu</string>
     <string name="city_hangzhou">Hangzhou</string>
     <string name="font_display">Display</string>
-    <string name="style_float">Float</string>
+    <string name="style_analog">Analog</string>
     <string name="style_split">Split</string>
+    <string name="style_float">Float</string>
+    <string name="style_solar">Liquid Solar</string>
 </resources>

@@ -49,7 +49,8 @@ object BuiltinWidgets {
 
         private fun glyphFor(condition: WeatherCondition): WidgetGlyph = when (condition) {
             WeatherCondition.CLEAR -> WidgetGlyph.SUN
-            WeatherCondition.PARTLY_CLOUDY, WeatherCondition.CLOUDY -> WidgetGlyph.CLOUD
+            WeatherCondition.PARTLY_CLOUDY -> WidgetGlyph.PARTLY_CLOUDY
+            WeatherCondition.CLOUDY -> WidgetGlyph.CLOUD
             WeatherCondition.RAIN -> WidgetGlyph.RAIN
             WeatherCondition.SNOW -> WidgetGlyph.SNOW
             WeatherCondition.THUNDER -> WidgetGlyph.THUNDER

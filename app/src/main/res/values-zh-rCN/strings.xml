@@ -181,6 +181,8 @@
     <string name="city_chengdu">成都</string>
     <string name="city_hangzhou">杭州</string>
     <string name="font_display">圆润大字</string>
+    <string name="style_analog">模拟表盘</string>
+    <string name="style_split">双栏数字</string>
     <string name="style_float">Float 叠层</string>
-    <string name="style_split">经典双栏</string>
+    <string name="style_solar">液态玻璃</string>
 </resources>

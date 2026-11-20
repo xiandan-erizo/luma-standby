@@ -14,25 +14,27 @@ import app.luma.standby.domain.model.LumaTheme
  */
 object PalettePresets {
 
-    // S: Pure-black OLED duo-tone pairs (iOS StandBy signature look).
+    // S: Pure-black OLED duo-tone pairs (iOS 26/27 StandBy signature look).
     val iosFloatBlue = LumaTheme(
         id = "ios-float-blue",
         name = "Float Ocean",
         background = "#000000",
-        primary = "#5AC8FA",
+        primary = "#64D2FF",
         secondary = "#8E939E",
         accent = "#0A84FF",
+        font = app.luma.standby.domain.model.FontChoice.ROUNDED,
         faceStyle = FaceStyle.FLOAT,
         brightnessProfile = BrightnessProfile.STANDARD,
     )
     val iosCoral = LumaTheme(
         id = "ios-coral",
-        name = "StandBy Coral",
+        name = "StandBy Analog",
         background = "#000000",
         primary = "#F5F7FA",
         secondary = "#8E8E93",
         accent = "#FF453A",
-        faceStyle = FaceStyle.SPLIT,
+        font = app.luma.standby.domain.model.FontChoice.ROUNDED,
+        faceStyle = FaceStyle.ANALOG,
         brightnessProfile = BrightnessProfile.STANDARD,
     )
     val iosPinkCyan = LumaTheme(
@@ -42,27 +44,30 @@ object PalettePresets {
         primary = "#FF6482",
         secondary = "#9898A0",
         accent = "#5AC8FA",
+        font = app.luma.standby.domain.model.FontChoice.ROUNDED,
         faceStyle = FaceStyle.FLOAT,
         brightnessProfile = BrightnessProfile.STANDARD,
     )
     val iosMint = LumaTheme(
         id = "ios-mint",
-        name = "StandBy Mint",
+        name = "StandBy Split",
         background = "#000000",
         primary = "#F2F5F7",
         secondary = "#8E8E93",
         accent = "#30D158",
+        font = app.luma.standby.domain.model.FontChoice.ROUNDED,
         faceStyle = FaceStyle.SPLIT,
         brightnessProfile = BrightnessProfile.STANDARD,
     )
     val iosSolar = LumaTheme(
         id = "ios-solar",
-        name = "Float Solar",
+        name = "Liquid Solar",
         background = "#000000",
         primary = "#FFD60A",
         secondary = "#989388",
         accent = "#FF9F0A",
-        faceStyle = FaceStyle.FLOAT,
+        font = app.luma.standby.domain.model.FontChoice.ROUNDED,
+        faceStyle = FaceStyle.SOLAR,
         brightnessProfile = BrightnessProfile.STANDARD,
     )
     val iosNightRed = LumaTheme(
@@ -72,7 +77,8 @@ object PalettePresets {
         primary = "#FF3B30",
         secondary = "#9E2A22",
         accent = "#FF453A",
-        faceStyle = FaceStyle.SPLIT,
+        font = app.luma.standby.domain.model.FontChoice.ROUNDED,
+        faceStyle = FaceStyle.ANALOG,
         brightnessProfile = BrightnessProfile.NIGHT,
     )
 

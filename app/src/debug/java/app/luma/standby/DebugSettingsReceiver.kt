@@ -4,6 +4,9 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import app.luma.standby.domain.model.DisplayMode
+import app.luma.standby.domain.model.FaceStyle
+import app.luma.standby.domain.model.StoredPlacement
+import app.luma.standby.domain.theme.ThemeEditing
 import app.luma.standby.domain.theme.ThemeRepository
 import kotlinx.coroutines.runBlocking
 
@@ -69,6 +72,24 @@ class DebugSettingsReceiver : BroadcastReceiver() {
                     }
                     if (intent.hasExtra("showSeconds")) {
                         next = next.copy(showSeconds = intent.getBooleanExtra("showSeconds", false))
+                    }
+                    intent.getStringExtra("style")?.let { name ->
+                        val style = runCatching { FaceStyle.valueOf(name.uppercase()) }.getOrNull()
+                        if (style != null) {
+                            val updated = ThemeEditing.withFaceStyle(next, style, System.currentTimeMillis())
+                            next = ThemeEditing.upsert(next, updated)
+                        }
+                    }
+                    intent.getStringExtra("widgets")?.let { raw ->
+                        val list = if (raw.equals("none", ignoreCase = true) || raw.isBlank()) {
+                            emptyList()
+                        } else {
+                            raw.split(",").mapNotNull { id ->
+                                val clean = id.trim()
+                                if (clean.isEmpty()) null else StoredPlacement(clean, "TOP_RIGHT")
+                            }
+                        }
+                        next = next.copy(widgetPlacements = list)
                     }
                     next
                 }

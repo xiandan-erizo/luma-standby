@@ -11,6 +11,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -142,35 +144,37 @@ fun ThemesScreen(
 
         item {
             Row(
-                modifier = Modifier.padding(top = 12.dp),
+                modifier = Modifier
+                    .padding(top = 12.dp)
+                    .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                FilterChip(
-                    selected = current.faceStyle == app.luma.standby.domain.model.FaceStyle.FLOAT,
-                    onClick = {
-                        onSaveTheme(
-                            ThemeEditing.withFaceStyle(
-                                settings,
-                                app.luma.standby.domain.model.FaceStyle.FLOAT,
-                                System.currentTimeMillis(),
-                            ),
-                        )
-                    },
-                    label = { Text(stringResource(R.string.style_float)) },
-                )
-                FilterChip(
-                    selected = current.faceStyle == app.luma.standby.domain.model.FaceStyle.SPLIT,
-                    onClick = {
-                        onSaveTheme(
-                            ThemeEditing.withFaceStyle(
-                                settings,
-                                app.luma.standby.domain.model.FaceStyle.SPLIT,
-                                System.currentTimeMillis(),
-                            ),
-                        )
-                    },
-                    label = { Text(stringResource(R.string.style_split)) },
-                )
+                app.luma.standby.domain.model.FaceStyle.entries.forEach { style ->
+                    FilterChip(
+                        selected = current.faceStyle == style,
+                        onClick = {
+                            onSaveTheme(
+                                ThemeEditing.withFaceStyle(
+                                    settings,
+                                    style,
+                                    System.currentTimeMillis(),
+                                ),
+                            )
+                        },
+                        label = {
+                            Text(
+                                stringResource(
+                                    when (style) {
+                                        app.luma.standby.domain.model.FaceStyle.ANALOG -> R.string.style_analog
+                                        app.luma.standby.domain.model.FaceStyle.SPLIT -> R.string.style_split
+                                        app.luma.standby.domain.model.FaceStyle.FLOAT -> R.string.style_float
+                                        app.luma.standby.domain.model.FaceStyle.SOLAR -> R.string.style_solar
+                                    },
+                                ),
+                            )
+                        },
+                    )
+                }
             }
             Row(
                 modifier = Modifier.padding(top = 4.dp),

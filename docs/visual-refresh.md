@@ -1,22 +1,33 @@
-# Visual refresh — iOS StandBy alignment (2026-11-19)
+# Visual refresh — iOS 26/27 StandBy & Liquid Glass (2026-11-20)
 
 ## Overview
 
-`ClockView` and `FaceLayout` now support two switchable iOS StandBy-aligned face styles (`FaceStyle.FLOAT` and `FaceStyle.SPLIT`) on pure-black (`#000000`) OLED duo-tone palettes while preserving the strict 1-draw-per-minute standby budget:
+`ClockView`, `FaceLayout`, `LumaFonts`, and `WidgetIcons` have been redesigned around four switchable iOS 26/27 StandBy faces while keeping the strict 1-draw-per-minute Canvas budget (zero Compose or animation loop on the standby surface):
 
-1. **`FaceStyle.FLOAT` (Float 叠层大字)**:
-   - Heavy, isotropic round-terminal vector numerals (`IosNumerals`) built directly in pixel space inset by half the stroke width (`Paint.Cap.ROUND` / `Paint.Join.ROUND`), eliminating non-uniform X/Y `canvas.scale` distortion.
-   - Negative intra-pair kerning (`-0.145 * unitW`) with alternating `accent` / `primary` vertical gradients and a screen-blended (`PorterDuff.Mode.SCREEN`) overlap highlight on dark surfaces so intersecting strokes glow translucently.
-   - Proportionate frosted colon circles (`radius = 0.49 * strokeWidth`, subtly tilted) and a compact top-right accent weekday + day header when no widgets are placed.
+1. **`FaceStyle.ANALOG` (经典模拟表盘 + 对称双栏大卡)**:
+   - Centered 50/50 symmetric dual-card landscape stage tailored to 2.18:1 OLED screens (`2656×1220`).
+   - Left slot: sculpted dark circular watch dial with Liquid Glass specular bezel, 60 precision radial ticks, 12 optically centered `Nunito ExtraBold` numerals, sculpted rounded baton hour/minute hands with depth shadow, and Apple Watch-style orange center hub (second hand drawn only when seconds are explicitly enabled).
+   - Right slot: flush-aligned square Calendar Hero card (oversized day numeral + accent weekday/month + full 7-column current-month calendar grid with today circled) when no widgets are placed, or 1 full-size Hero Square / 2 Medium / 3 Compact Liquid Glass widget cards.
 
-2. **`FaceStyle.SPLIT` (经典双栏组件)**:
-   - Left column: bold rounded digital numerals centered inside a 60-tick rounded-squircle bezel (`IosNumerals.drawSquircleTickRing`) that lights ticks up to the current minute on each minute-boundary redraw (zero extra wakeups).
-   - Right column without widgets: hero StandBy calendar lockup (accent-colored `WEEKDAY · MONTH` overline above an oversized rounded day numeral).
-   - Right column with widgets: dark-glass squircle complication cards (`#16FFFFFF` fill, hairline stroke) dynamically distributed for 1, 2, or 3 placed tiles:
-     - **Battery (`WidgetKind.BATTERY_RING`)**: circular progress arc (`#30D158` green / `#FFD60A` low / `#FF453A` critical, respecting Night Red tint) around a rounded phone silhouette + charging bolt, paired with tabular percentage and status.
-     - **Weather (`WidgetKind.WEATHER_HERO`)**: sky-cyan (`#5AC8FA`) location header (`城市 ↗`), multi-tone vector weather icon, oversized temperature reading, and condition label.
-     - **Alarm / Media / Notification**: tinted circular glyph badges with colored category/app overlines and primary titles.
+2. **`FaceStyle.SPLIT` (双栏堆叠数字 + 对称大卡)**:
+   - Left slot: dark Liquid Glass squircle card with stacked 2-row bold rounded numerals (`Nunito ExtraBold`, luminous white hours over vibrant accent minutes), matched pixel-for-pixel in size and alignment to the right slot.
 
-3. **Palettes (`PalettePresets` / `ThemePresets`)**:
-   - Group S introduces 6 pure-black `#000000` high-contrast duo-tone StandBy presets (`ios-float-blue` default, `ios-coral`, `ios-pink-cyan`, `ios-mint`, `ios-solar`, `ios-night-red`), alongside existing muted dark, near-black, and daylight groups (24 presets total, all legacy IDs preserved).
-   - `PreviewScreen` and `ThemesScreen` expose a 2-chip `Float` / `Split` style toggle without altering the existing 4-tab settings shell.
+3. **`FaceStyle.FLOAT` (全屏 Float 叠层大字)**:
+   - Always edge-to-edge fullscreen landscape numerals using bundled `Fredoka Bold` (SIL OFL 1.1), replacing the former monoline stroke paths and fixing the `Paint.alpha` leak.
+   - Organic alternating vertical stagger and micro-tilt, negative intra-pair overlap, rich duo-tone vertical gradients, subtle `SCREEN` overlap shimmer, and a sleek top bar with date + optional compact Liquid Glass widget pills.
+
+4. **`FaceStyle.SOLAR` (iOS 26/27 液态玻璃 + Solar 氛围光)**:
+   - Layered radial sunset/aurora horizon glow over OLED `#000000` black.
+   - Oversized horizontal Liquid Glass numerals with frosted translucent body fill and a pure exterior specular refraction rim (interior punched out via `DST_OUT` to eliminate TTF sub-contour overlap artifacts).
+
+5. **Widget Cards & Gestures**:
+   - Weather cards feature condition- and time-aware iOS sky gradients, soft sun/moon glow, filled vector location arrows, and multi-tone SF-Symbols-inspired filled weather glyphs.
+   - Battery cards feature thick sweep-gradient circular progress rings with centered phone silhouette and charging bolt.
+   - Night Red mode (`BrightnessProfile.NIGHT`) unifies every face, glow, and card onto pure `#000000` black + deep crimson `#FF3B30`.
+   - Vertical swipe up/down in `StandbyActivity` cycles all four faces live with a transient Liquid Glass indicator pill; double-tap exits cleanly.
+
+## Bundled Fonts & Licenses
+
+- `res/font/nunito_extrabold.ttf` & `res/font/nunito_bold.ttf` — SIL OFL 1.1 (`docs/NUNITO-OFL.txt`, `res/raw/nunito_ofl.txt`)
+- `res/font/fredoka_bold.ttf` — SIL OFL 1.1 (`docs/FREDOKA-OFL.txt`, `res/raw/fredoka_ofl.txt`)
+- `res/font/oswald.ttf` — SIL OFL 1.1 (`docs/OSWALD-OFL.txt`, `res/raw/oswald_ofl.txt`)

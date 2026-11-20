@@ -26,8 +26,10 @@ enum class FontChoice(
 
 @Serializable
 enum class FaceStyle {
+    ANALOG,
     SPLIT,
     FLOAT,
+    SOLAR,
 }
 
 @Serializable

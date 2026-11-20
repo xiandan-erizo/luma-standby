@@ -11,8 +11,11 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
+import android.graphics.RadialGradient
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
+import android.graphics.SweepGradient
 import android.graphics.Typeface
 import android.os.Handler
 import android.os.Looper
@@ -35,22 +38,21 @@ import app.luma.standby.domain.widget.WidgetKind
 import app.luma.standby.domain.widget.WidgetSlot
 import java.text.SimpleDateFormat
 import java.util.Calendar
-import java.util.Date
 import java.util.Locale
+import kotlin.math.cos
+import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sin
 
 /**
- * The whole standby face. A plain View drawing on a Canvas: no Compose, no
- * animation loop, no allocation per frame beyond short formatted strings.
+ * Pure Canvas standby face modelled 1:1 after iOS 26/27 StandBy & Liquid Glass:
+ * - [FaceStyle.ANALOG]: Symmetric dual squircle — sculpted circular watch dial + Calendar/Widget Hero.
+ * - [FaceStyle.SPLIT]: Symmetric dual squircle — stacked Liquid Glass digital clock + Calendar/Widget Hero.
+ * - [FaceStyle.FLOAT]: Fullscreen oversized bubbly duo-tone overlapping numerals (bundled Fredoka Bold).
+ * - [FaceStyle.SOLAR]: Fullscreen Liquid Glass translucent numerals over atmospheric solar horizon glow.
  *
- * Supports two iOS StandBy-aligned presentation styles:
- * - [FaceStyle.FLOAT]: Heavy rounded bubbly duo-tone numerals with translucent overlap.
- * - [FaceStyle.SPLIT]: Crisp rounded digital clock inside a 60-tick squircle bezel
- *   paired with graphical complications (circular battery ring, accent weekday +
- *   oversized date, and sky-header hero temperature).
- *
- * Redraw policy: exactly one draw per minute boundary (or per second when
- * seconds are requested), plus one after any time/timezone/date/locale change.
+ * Strict low-power contract: plain Android View, zero Compose, zero animation loop,
+ * exactly one redraw per minute boundary (or per second when seconds are enabled).
  */
 class ClockView @JvmOverloads constructor(
     context: Context,
@@ -58,52 +60,42 @@ class ClockView @JvmOverloads constructor(
     defStyleAttr: Int = 0,
 ) : View(context, attrs, defStyleAttr) {
 
-    private val strokeDigitPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeCap = Paint.Cap.ROUND
-        strokeJoin = Paint.Join.ROUND
-    }
-    private val screenBlendMode = PorterDuffXfermode(PorterDuff.Mode.SCREEN)
-    private val colonPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.FILL
-    }
-    private val tickPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeCap = Paint.Cap.ROUND
-    }
-    private val cardFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.FILL
-    }
-    private val cardStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = 1.2f
-    }
+    // Dedicated paints — never leak alpha/xfermode across passes.
+    private val backgroundPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val cardFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val cardHighlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val cardRimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
     }
-    private val timePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private val dialStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+    }
+    private val dialFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val numeralFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
         textAlign = Paint.Align.LEFT
         isSubpixelText = true
-        fontFeatureSettings = "tnum"
     }
-    private val suffixPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private val numeralOverlayPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
         textAlign = Paint.Align.LEFT
         isSubpixelText = true
     }
+    private val numeralRimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeJoin = Paint.Join.ROUND
+        strokeCap = Paint.Cap.ROUND
+        textAlign = Paint.Align.LEFT
+        isSubpixelText = true
+    }
+    private val colonPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val dateHeaderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.LEFT
         isSubpixelText = true
     }
-    private val dateNumberPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        textAlign = Paint.Align.LEFT
-        isSubpixelText = true
-        fontFeatureSettings = "tnum"
-    }
-    private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        textAlign = Paint.Align.CENTER
-    }
-    private val backgroundPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val widgetPrimaryPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.LEFT
         isSubpixelText = true
@@ -114,11 +106,22 @@ class ClockView @JvmOverloads constructor(
         isSubpixelText = true
         fontFeatureSettings = "tnum"
     }
+    private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textAlign = Paint.Align.CENTER
+        isSubpixelText = true
+    }
 
-    private val digitPath = Path()
-    private val ringPath = Path()
+    private val screenBlendMode = PorterDuffXfermode(PorterDuff.Mode.SCREEN)
+    private val dstOutBlendMode = PorterDuffXfermode(PorterDuff.Mode.DST_OUT)
     private val rectScratch = RectF()
+    private val innerScratch = RectF()
+    private val textBounds = Rect()
+    private val clipPath = Path()
     private val layerBounds = RectF()
+
+    private val roundedExtraBold: Typeface by lazy { LumaFonts.roundedExtraBold(context) }
+    private val roundedBold: Typeface by lazy { LumaFonts.roundedBold(context) }
+    private val floatFace: Typeface by lazy { LumaFonts.floatDisplay(context) }
 
     private var theme: LumaTheme = ThemePresets.iosFloatBlue
     private var colors: ResolvedColors = theme.resolveColors()
@@ -128,11 +131,9 @@ class ClockView @JvmOverloads constructor(
     private var burnInDrift: Boolean = true
     private var hintText: String? = null
     private var hintAlpha: Float = 0f
+    private var bannerText: String? = null
 
     private var widgetTiles: List<WidgetTile> = emptyList()
-
-    private val mediumSans: Typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-    private val boldSans: Typeface = Typeface.create("sans-serif", Typeface.BOLD)
 
     /** Called once per redraw, before the frame is drawn. */
     var onTick: (() -> Unit)? = null
@@ -144,6 +145,7 @@ class ClockView @JvmOverloads constructor(
     private val hintHandler = Handler(Looper.getMainLooper())
     private val hideHint = Runnable {
         hintAlpha = 0f
+        bannerText = null
         invalidate()
     }
 
@@ -154,7 +156,6 @@ class ClockView @JvmOverloads constructor(
     private var shaderWidth = -1f
     private var shaderHeight = -1f
     private var shaderKey: String? = null
-
     private var receiverRegistered = false
 
     private val timeReceiver = object : BroadcastReceiver() {
@@ -188,17 +189,28 @@ class ClockView @JvmOverloads constructor(
         this.burnInDrift = burnInShift
         this.hintText = hint
         scheduler.secondsEnabled = this.showSeconds
-        if (hint.isNullOrEmpty()) hintAlpha = 0f
+        if (hint.isNullOrEmpty() && bannerText.isNullOrEmpty()) hintAlpha = 0f
         invalidate()
     }
 
-    /** Show the exit hint for a few seconds, then get out of the way again. */
+    /** Show the exit hint briefly on touch. */
     fun flashHint() {
         if (hintText.isNullOrEmpty()) return
+        bannerText = null
         hintAlpha = 1f
         invalidate()
         hintHandler.removeCallbacks(hideHint)
         hintHandler.postDelayed(hideHint, HINT_VISIBLE_MS)
+    }
+
+    /** Show a brief Liquid Glass style-switch pill when swiping faces in Standby. */
+    fun flashBanner(label: String) {
+        if (label.isBlank()) return
+        bannerText = label
+        hintAlpha = 1f
+        invalidate()
+        hintHandler.removeCallbacks(hideHint)
+        hintHandler.postDelayed(hideHint, BANNER_VISIBLE_MS)
     }
 
     /** Replace the widget tiles; callers compute content off the redraw path. */
@@ -241,28 +253,67 @@ class ClockView @JvmOverloads constructor(
         val w = width.toFloat()
         val h = height.toFloat()
         if (w <= 0f || h <= 0f) return
-        drawBackground(canvas, w, h)
 
         val now = Calendar.getInstance()
-        val withWidgets = widgetTiles.isNotEmpty()
-        val layout = FaceLayout.create(w, h, withWidgets, theme.faceStyle)
-        val landscape = w >= h
+        val nightRed = isNightRed()
+        val darkSurface = isDark(colors.background) || nightRed
+
+        drawBackground(canvas, w, h, nightRed, darkSurface)
+
         val rightWidgets = widgetTiles.filter {
             it.slot == WidgetSlot.TOP_RIGHT || it.slot == WidgetSlot.BOTTOM_RIGHT
         }
+        val leftWidgets = widgetTiles.filter { it.slot == WidgetSlot.BOTTOM_LEFT }
+        val hasRightWidgets = rightWidgets.isNotEmpty()
+        val layout = FaceLayout.create(w, h, hasRightWidgets || leftWidgets.isNotEmpty(), theme.faceStyle)
+        val landscape = w >= h
 
         val drift = driftFor()
         canvas.save()
         canvas.translate(drift.first, drift.second)
-        drawTime(canvas, layout.clock, now, landscape)
-        drawDate(canvas, layout, now, landscape, rightWidgets.isNotEmpty())
-        drawWidgets(canvas, layout, rightWidgets)
-        drawHint(canvas, w, h)
+
+        if (!landscape) {
+            drawPortraitFace(canvas, layout, now, rightWidgets, leftWidgets, nightRed, darkSurface)
+        } else {
+            when (theme.faceStyle) {
+                FaceStyle.ANALOG -> {
+                    drawAnalogWatch(canvas, layout.clock, now, nightRed, darkSurface)
+                    drawDualRightStage(canvas, layout, now, rightWidgets, nightRed, darkSurface)
+                    drawOptionalFooterTile(canvas, layout, leftWidgets, nightRed, darkSurface)
+                }
+
+                FaceStyle.SPLIT -> {
+                    drawSplitDigitalCard(canvas, layout.clock, now, nightRed, darkSurface)
+                    drawDualRightStage(canvas, layout, now, rightWidgets, nightRed, darkSurface)
+                    drawOptionalFooterTile(canvas, layout, leftWidgets, nightRed, darkSurface)
+                }
+
+                FaceStyle.FLOAT -> {
+                    drawFullscreenTopBar(canvas, layout.date, now, widgetTiles, nightRed, darkSurface, rightAlignedDate = true)
+                    drawFloatFace(canvas, layout.clock, now, nightRed, darkSurface)
+                }
+
+                FaceStyle.SOLAR -> {
+                    drawFullscreenTopBar(canvas, layout.date, now, widgetTiles, nightRed, darkSurface, rightAlignedDate = false)
+                    drawSolarGlassFace(canvas, layout.clock, now, nightRed, darkSurface)
+                }
+            }
+        }
+
+        drawTransientIndicator(canvas, w, h, nightRed, darkSurface)
         canvas.restore()
     }
 
-    private fun drawBackground(canvas: Canvas, w: Float, h: Float) {
-        if (theme.gradient) {
+    // -------------------------------------------------------------------------
+    // Background + Solar Atmospheric Horizon
+    // -------------------------------------------------------------------------
+
+    private fun drawBackground(canvas: Canvas, w: Float, h: Float, nightRed: Boolean, darkSurface: Boolean) {
+        if (nightRed) {
+            backgroundPaint.shader = null
+            backgroundPaint.color = Color.BLACK
+            canvas.drawRect(0f, 0f, w, h, backgroundPaint)
+        } else if (theme.gradient) {
             val key = theme.id + ":" + theme.background + ":" + theme.gradientEnd
             if (shaderKey != key || shaderWidth != w || shaderHeight != h) {
                 backgroundPaint.shader = LinearGradient(
@@ -274,615 +325,1379 @@ class ClockView @JvmOverloads constructor(
                 shaderWidth = w
                 shaderHeight = h
             }
+            canvas.drawRect(0f, 0f, w, h, backgroundPaint)
         } else {
             if (shaderKey != null) {
                 backgroundPaint.shader = null
                 shaderKey = null
             }
             backgroundPaint.color = colors.background
+            canvas.drawRect(0f, 0f, w, h, backgroundPaint)
         }
-        canvas.drawRect(0f, 0f, w, h, backgroundPaint)
+
+        // iOS StandBy Solar atmospheric glow along the lower horizon.
+        if (theme.faceStyle == FaceStyle.SOLAR) {
+            drawSolarAtmosphere(canvas, w, h, nightRed, darkSurface)
+        }
     }
 
-    private fun drawTime(canvas: Canvas, box: FaceBox, calendar: Calendar, landscape: Boolean) {
-        val hour24 = calendar.get(Calendar.HOUR_OF_DAY)
+    private fun drawSolarAtmosphere(canvas: Canvas, w: Float, h: Float, nightRed: Boolean, darkSurface: Boolean) {
+        if (!darkSurface) return
+        val (horizonCore, horizonMid) = solarHorizonColors(nightRed)
+
+        // Wide warm horizon bloom centered near bottom (rich sunset/aurora, zero muddy olive)
+        val r1 = max(w, h) * 0.78f
+        val p1 = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = RadialGradient(
+                w * 0.50f,
+                h * 1.12f,
+                r1,
+                intArrayOf(
+                    withAlpha(horizonCore, if (nightRed) 0.34f else 0.72f),
+                    withAlpha(horizonMid, if (nightRed) 0.14f else 0.34f),
+                    Color.TRANSPARENT,
+                ),
+                floatArrayOf(0.0f, 0.44f, 1.0f),
+                Shader.TileMode.CLAMP,
+            )
+        }
+        canvas.drawRect(0f, 0f, w, h, p1)
+
+        // Asymmetric secondary light flare (signature iOS StandBy Solar horizon depth)
+        val r2 = max(w, h) * 0.50f
+        val p2 = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = RadialGradient(
+                w * 0.78f,
+                h * 0.94f,
+                r2,
+                intArrayOf(
+                    withAlpha(horizonCore, if (nightRed) 0.16f else 0.36f),
+                    Color.TRANSPARENT,
+                ),
+                floatArrayOf(0.0f, 1.0f),
+                Shader.TileMode.CLAMP,
+            )
+        }
+        canvas.drawRect(0f, 0f, w, h, p2)
+    }
+
+    /**
+     * Maps palette hues to rich luminous sunset/aurora horizon colors so yellow/gold
+     * themes glow warm amber-vermilion on OLED black instead of turning muddy olive.
+     */
+    private fun solarHorizonColors(nightRed: Boolean): Pair<Int, Int> {
+        if (nightRed) return Color.parseColor("#C41E16") to Color.parseColor("#5C0A07")
+        val base = vibrantGlowAccent()
+        val hsv = FloatArray(3)
+        Color.colorToHSV(base, hsv)
+        val hue = hsv[0]
+        return when {
+            // Yellow / Gold / Amber -> warm California sunset tangerine + deep vermilion
+            hue in 28f..70f -> Color.parseColor("#FF6A1A") to Color.parseColor("#B8250A")
+            // Cyan / Blue -> rich deep twilight sapphire + electric cyan
+            hue in 180f..250f -> Color.parseColor("#0A84FF") to Color.parseColor("#1D2E7A")
+            // Pink / Coral / Red -> vivid magenta-coral dusk
+            hue >= 320f || hue < 28f -> Color.parseColor("#FF375F") to Color.parseColor("#7A1648")
+            // Green / Teal -> aurora emerald + deep teal
+            else -> Color.parseColor("#24C978") to Color.parseColor("#0D4A42")
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Face 1: iOS StandBy Classic Analog Watch Dial
+    // -------------------------------------------------------------------------
+
+    private fun drawAnalogWatch(
+        canvas: Canvas,
+        box: FaceBox,
+        now: Calendar,
+        nightRed: Boolean,
+        darkSurface: Boolean,
+    ) {
+        val diameter = min(box.width, box.height) * 0.98f
+        val r = diameter * 0.5f
+        val cx = box.centerX
+        val cy = box.centerY
+        if (r < 24f) return
+
+        // Subtle sculpted dial base
+        val dialTop = when {
+            nightRed -> Color.parseColor("#0A0202")
+            darkSurface -> Color.parseColor("#16171C")
+            else -> Color.parseColor("#F5F6F8")
+        }
+        val dialBot = when {
+            nightRed -> Color.BLACK
+            darkSurface -> Color.parseColor("#0A0B0E")
+            else -> Color.parseColor("#E6E8EE")
+        }
+        dialFillPaint.shader = LinearGradient(cx, cy - r, cx, cy + r, dialTop, dialBot, Shader.TileMode.CLAMP)
+        canvas.drawCircle(cx, cy, r, dialFillPaint)
+        dialFillPaint.shader = null
+
+        // Liquid Glass circular specular bezel rim
+        val rimStroke = (r * 0.0065f).coerceIn(1.2f, 2.6f)
+        cardRimPaint.strokeWidth = rimStroke
+        cardRimPaint.shader = LinearGradient(
+            cx - r, cy - r, cx + r, cy + r,
+            intArrayOf(
+                if (nightRed) Color.argb(66, 255, 69, 58) else if (darkSurface) Color.argb(78, 255, 255, 255) else Color.argb(46, 0, 0, 0),
+                if (nightRed) Color.argb(18, 255, 69, 58) else if (darkSurface) Color.argb(16, 255, 255, 255) else Color.argb(14, 0, 0, 0),
+                if (nightRed) Color.argb(42, 255, 69, 58) else if (darkSurface) Color.argb(40, 255, 255, 255) else Color.argb(32, 0, 0, 0),
+            ),
+            floatArrayOf(0f, 0.5f, 1f),
+            Shader.TileMode.CLAMP,
+        )
+        canvas.drawCircle(cx, cy, r - rimStroke * 0.5f, cardRimPaint)
+        cardRimPaint.shader = null
+
+        // 60 precision radial tick marks
+        val majorColor = when {
+            nightRed -> Color.parseColor("#FF3B30")
+            darkSurface -> Color.argb(242, 255, 255, 255)
+            else -> Color.parseColor("#1D1D1F")
+        }
+        val minorColor = when {
+            nightRed -> Color.argb(90, 255, 59, 48)
+            darkSurface -> Color.argb(78, 255, 255, 255)
+            else -> Color.argb(68, 29, 29, 31)
+        }
+        val outerTickR = r * 0.922f
+        for (i in 0 until 60) {
+            val angle = Math.toRadians((i * 6.0) - 90.0)
+            val cosA = cos(angle).toFloat()
+            val sinA = sin(angle).toFloat()
+            val major = i % 5 == 0
+            val innerTickR = if (major) r * 0.832f else r * 0.872f
+            dialStrokePaint.color = if (major) majorColor else minorColor
+            dialStrokePaint.strokeWidth = (if (major) r * 0.022f else r * 0.0095f).coerceAtLeast(1.2f)
+            canvas.drawLine(
+                cx + cosA * innerTickR,
+                cy + sinA * innerTickR,
+                cx + cosA * outerTickR,
+                cy + sinA * outerTickR,
+                dialStrokePaint,
+            )
+        }
+
+        // 12 crisp SF-Rounded-style hour numerals (1..12)
+        numeralFillPaint.shader = null
+        numeralFillPaint.alpha = 255
+        numeralFillPaint.xfermode = null
+        numeralFillPaint.typeface = roundedExtraBold
+        numeralFillPaint.textSize = r * 0.185f
+        numeralFillPaint.color = majorColor
+        val numR = r * 0.680f
+        for (hour in 1..12) {
+            val angle = Math.toRadians((hour * 30.0) - 90.0)
+            val nx = cx + cos(angle).toFloat() * numR
+            val ny = cy + sin(angle).toFloat() * numR
+            val label = hour.toString()
+            numeralFillPaint.getTextBounds(label, 0, label.length, textBounds)
+            val tx = nx - textBounds.exactCenterX()
+            val ty = ny - textBounds.exactCenterY()
+            canvas.drawText(label, tx, ty, numeralFillPaint)
+        }
+
+        val hour12 = now.get(Calendar.HOUR)
+        val minute = now.get(Calendar.MINUTE)
+        val second = now.get(Calendar.SECOND)
+        val hourDeg = (hour12 + minute / 60f) * 30f
+        val minuteDeg = (minute + if (showSeconds) second / 60f else 0f) * 6f
+        val secondDeg = second * 6f
+
+        val handColor = when {
+            nightRed -> Color.parseColor("#FF3B30")
+            darkSurface -> Color.WHITE
+            else -> Color.parseColor("#1D1D1F")
+        }
+        val hubAccent = when {
+            nightRed -> Color.parseColor("#FF453A")
+            !darkSurface -> colors.accent
+            colors.accent == Color.WHITE || isNearWhite(colors.accent) -> Color.parseColor("#FF9F0A")
+            else -> Color.parseColor("#FF9F0A")
+        }
+
+        // Sculpted Apple Watch baton hour hand
+        drawWatchBatonHand(
+            canvas = canvas,
+            cx = cx,
+            cy = cy,
+            degrees = hourDeg,
+            stemLen = r * 0.165f,
+            bladeLen = r * 0.515f,
+            stemW = r * 0.024f,
+            bladeW = r * 0.062f,
+            color = handColor,
+            shadow = darkSurface && !nightRed,
+        )
+
+        // Sculpted Apple Watch baton minute hand
+        drawWatchBatonHand(
+            canvas = canvas,
+            cx = cx,
+            cy = cy,
+            degrees = minuteDeg,
+            stemLen = r * 0.165f,
+            bladeLen = r * 0.785f,
+            stemW = r * 0.022f,
+            bladeW = r * 0.046f,
+            color = handColor,
+            shadow = darkSurface && !nightRed,
+        )
+
+        // Optional crisp second hand (ONLY when user enables seconds; preserves 1 draw/min default)
+        if (showSeconds) {
+            canvas.save()
+            canvas.translate(cx, cy)
+            canvas.rotate(secondDeg)
+            dialStrokePaint.color = hubAccent
+            dialStrokePaint.strokeWidth = (r * 0.012f).coerceAtLeast(1.5f)
+            canvas.drawLine(0f, r * 0.15f, 0f, -r * 0.855f, dialStrokePaint)
+            canvas.restore()
+        }
+
+        // Iconic Apple Watch orange center hub + recessed axle pinhole
+        dialFillPaint.shader = null
+        dialFillPaint.color = hubAccent
+        canvas.drawCircle(cx, cy, r * 0.046f, dialFillPaint)
+        dialFillPaint.color = dialBot
+        canvas.drawCircle(cx, cy, r * 0.018f, dialFillPaint)
+    }
+
+    private fun drawWatchBatonHand(
+        canvas: Canvas,
+        cx: Float,
+        cy: Float,
+        degrees: Float,
+        stemLen: Float,
+        bladeLen: Float,
+        stemW: Float,
+        bladeW: Float,
+        color: Int,
+        shadow: Boolean,
+    ) {
+        canvas.save()
+        canvas.translate(cx, cy)
+        canvas.rotate(degrees)
+
+        if (shadow) {
+            dialFillPaint.shader = null
+            dialFillPaint.color = Color.argb(95, 0, 0, 0)
+            val sOff = bladeW * 0.18f
+            rectScratch.set(-bladeW * 0.5f + sOff, -bladeLen + sOff, bladeW * 0.5f + sOff, -stemLen + sOff)
+            canvas.drawRoundRect(rectScratch, bladeW * 0.5f, bladeW * 0.5f, dialFillPaint)
+        }
+
+        // Slender stem from hub to baton
+        dialStrokePaint.color = color
+        dialStrokePaint.strokeWidth = stemW.coerceAtLeast(2f)
+        canvas.drawLine(0f, 0f, 0f, -stemLen - bladeW * 0.35f, dialStrokePaint)
+
+        // Rounded baton paddle
+        dialFillPaint.shader = null
+        dialFillPaint.color = color
+        rectScratch.set(-bladeW * 0.5f, -bladeLen, bladeW * 0.5f, -stemLen)
+        canvas.drawRoundRect(rectScratch, bladeW * 0.5f, bladeW * 0.5f, dialFillPaint)
+        canvas.restore()
+    }
+
+    // -------------------------------------------------------------------------
+    // Face 2: iOS StandBy Stacked Digital Liquid Glass Card (Left of Dual View)
+    // -------------------------------------------------------------------------
+
+    private fun drawSplitDigitalCard(
+        canvas: Canvas,
+        box: FaceBox,
+        now: Calendar,
+        nightRed: Boolean,
+        darkSurface: Boolean,
+    ) {
+        val cornerR = min(box.width, box.height) * 0.175f
+        val topFill = when {
+            nightRed -> Color.parseColor("#0D0202")
+            darkSurface -> Color.parseColor("#1C1E24")
+            else -> Color.parseColor("#F5F6F9")
+        }
+        val botFill = when {
+            nightRed -> Color.BLACK
+            darkSurface -> Color.parseColor("#0F1014")
+            else -> Color.parseColor("#E6E8EF")
+        }
+        drawGlassCard(canvas, box, cornerR, topFill, botFill, nightRed, darkSurface)
+
+        val hour24 = now.get(Calendar.HOUR_OF_DAY)
         val hour = if (use24Hour) hour24 else (hour24 % 12).let { if (it == 0) 12 else it }
-        val minute = calendar.get(Calendar.MINUTE)
-        val second = calendar.get(Calendar.SECOND)
+        val minute = now.get(Calendar.MINUTE)
+        val second = now.get(Calendar.SECOND)
+        val hourText = if (use24Hour) String.format(Locale.US, "%02d", hour) else hour.toString()
+        val minuteText = String.format(Locale.US, "%02d", minute)
+        val suffix = if (use24Hour) "" else if (hour24 < 12) "AM" else "PM"
+
+        val face = clockTypefaceForSplit()
+        val padX = box.width * 0.105f
+        val padY = box.height * 0.11f
+        val availW = (box.width - padX * 2f).coerceAtLeast(1f)
+        val availH = (box.height - padY * 2f).coerceAtLeast(1f)
+        val lineGap = availH * 0.048f
+        val targetLineH = (availH - lineGap) * 0.5f
+
+        // Measure tight glyph ink bounds on "88" so digits stay rock-steady across minutes
+        val refSize = 200f
+        numeralFillPaint.typeface = face
+        numeralFillPaint.textSize = refSize
+        numeralFillPaint.getTextBounds("88", 0, 2, textBounds)
+        val refH = textBounds.height().toFloat().coerceAtLeast(1f)
+        val refW = max(
+            numeralFillPaint.measureText("88"),
+            max(numeralFillPaint.measureText(hourText), numeralFillPaint.measureText(minuteText)),
+        ).coerceAtLeast(1f)
+
+        val scaleByH = targetLineH / refH
+        val scaleByW = (availW * 0.96f) / refW
+        val textSize = refSize * min(scaleByH, scaleByW)
+
+        numeralFillPaint.textSize = textSize
+        numeralFillPaint.getTextBounds("88", 0, 2, textBounds)
+        val inkH = textBounds.height().toFloat()
+        val blockH = inkH * 2f + lineGap
+        val topY = box.centerY - blockH * 0.5f
+        val hourCenterY = topY + inkH * 0.5f
+        val minCenterY = topY + inkH + lineGap + inkH * 0.5f
+
+        // Hour row (luminous crisp white / light sheen)
+        val hourTopColor = when {
+            nightRed -> Color.parseColor("#FF453A")
+            darkSurface -> Color.WHITE
+            else -> colors.primary
+        }
+        val hourBotColor = when {
+            nightRed -> Color.parseColor("#D62820")
+            darkSurface -> Color.parseColor("#DCE3EE")
+            else -> shiftLuminance(colors.primary, 0.08f)
+        }
+        drawCenteredTightText(
+            canvas = canvas,
+            text = hourText,
+            cx = box.centerX,
+            cy = hourCenterY,
+            paint = numeralFillPaint,
+            topColor = hourTopColor,
+            bottomColor = hourBotColor,
+            inkHeight = inkH,
+        )
+
+        // Minute row (vibrant duo-tone accent sheen — classic iOS StandBy color pop)
+        val accentBase = when {
+            nightRed -> Color.parseColor("#CC2820")
+            !darkSurface -> colors.accent
+            isNearWhite(colors.accent) -> Color.parseColor("#64D2FF")
+            else -> colors.accent
+        }
+        val minTopColor = shiftLuminance(accentBase, if (darkSurface) 0.14f else -0.06f)
+        val minBotColor = shiftLuminance(accentBase, if (darkSurface) -0.10f else 0.08f)
+        drawCenteredTightText(
+            canvas = canvas,
+            text = minuteText,
+            cx = box.centerX,
+            cy = minCenterY,
+            paint = numeralFillPaint,
+            topColor = minTopColor,
+            bottomColor = minBotColor,
+            inkHeight = inkH,
+        )
+
+        // Optional AM/PM indicator top-left & seconds pill bottom-right
+        if (suffix.isNotEmpty()) {
+            dateHeaderPaint.typeface = roundedBold
+            dateHeaderPaint.textAlign = Paint.Align.LEFT
+            dateHeaderPaint.textSize = (box.height * 0.068f).coerceAtLeast(11f)
+            dateHeaderPaint.color = withAlpha(if (nightRed) Color.parseColor("#FF453A") else colors.secondary, 0.82f)
+            canvas.drawText(suffix, box.left + padX * 0.85f, box.top + padY * 1.15f, dateHeaderPaint)
+        }
+        if (showSeconds) {
+            val secText = String.format(Locale.US, "%02d", second)
+            dateHeaderPaint.typeface = roundedBold
+            dateHeaderPaint.textAlign = Paint.Align.RIGHT
+            dateHeaderPaint.textSize = (box.height * 0.068f).coerceAtLeast(11f)
+            dateHeaderPaint.color = withAlpha(accentBase, 0.86f)
+            canvas.drawText(secText, box.right - padX * 0.85f, box.bottom - padY * 0.65f, dateHeaderPaint)
+            dateHeaderPaint.textAlign = Paint.Align.LEFT
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Face 3: iOS StandBy Fullscreen FLOAT (Bundled Fredoka Bold, Zero Alpha Bug)
+    // -------------------------------------------------------------------------
+
+    private fun drawFloatFace(
+        canvas: Canvas,
+        box: FaceBox,
+        now: Calendar,
+        nightRed: Boolean,
+        darkSurface: Boolean,
+    ) {
+        val hour24 = now.get(Calendar.HOUR_OF_DAY)
+        val hour = if (use24Hour) hour24 else (hour24 % 12).let { if (it == 0) 12 else it }
+        val minute = now.get(Calendar.MINUTE)
+        val second = now.get(Calendar.SECOND)
         val hourText = if (use24Hour) String.format(Locale.US, "%02d", hour) else hour.toString()
         val text = if (showSeconds) {
             String.format(Locale.US, "%s:%02d:%02d", hourText, minute, second)
         } else {
             String.format(Locale.US, "%s:%02d", hourText, minute)
         }
-        val suffix = if (use24Hour) "" else if (hour24 < 12) "AM" else "PM"
 
-        if (theme.faceStyle == FaceStyle.FLOAT) {
-            drawFloatTime(canvas, box, text, suffix)
-        } else {
-            drawSplitTime(canvas, box, text, suffix, minute, second, landscape)
+        // Companion vibrant duo-tone colors for Float
+        val pairA = when {
+            nightRed -> Color.parseColor("#FF3B30")
+            !darkSurface -> colors.primary
+            colors.accent == colors.primary -> Color.parseColor("#0A84FF")
+            else -> colors.accent
         }
-    }
+        val pairB = when {
+            nightRed -> Color.parseColor("#C7241B")
+            !darkSurface -> colors.accent
+            colors.accent == colors.primary -> Color.parseColor("#64D2FF")
+            else -> colors.primary
+        }
 
-    /**
-     * iOS StandBy Float style: plump rounded monoline numerals with negative intra-pair
-     * kerning, alternating primary/accent duo-tone vertical gradients, and a subtle
-     * additive glow where adjacent digits overlap on dark OLED backgrounds.
-     */
-    private fun drawFloatTime(canvas: Canvas, box: FaceBox, text: String, suffix: String) {
-        val overlapRatio = -0.145f
-        val colonRatio = 0.20f
-        val postColonGap = -0.045f
+        // Measure exact tight glyph ink widths at reference size using Fredoka Bold
+        val refSize = 300f
+        numeralFillPaint.typeface = floatFace
+        numeralFillPaint.textSize = refSize
+        numeralFillPaint.shader = null
+        numeralFillPaint.xfermode = null
+        numeralFillPaint.alpha = 255
 
-        var totalUnits = 0f
-        text.forEachIndexed { idx, ch ->
+        numeralFillPaint.getTextBounds("8", 0, 1, textBounds)
+        val refInkH = textBounds.height().toFloat().coerceAtLeast(1f)
+        val refDigitW = textBounds.width().toFloat().coerceAtLeast(1f)
+        val overlapPxRef = -refDigitW * 0.105f
+        val colonSlotRef = refDigitW * 0.25f
+
+        val glyphWidths = FloatArray(text.length)
+        var totalRefW = 0f
+        for (i in text.indices) {
+            val ch = text[i]
             if (ch == ':') {
-                totalUnits += colonRatio
+                glyphWidths[i] = colonSlotRef
+                totalRefW += colonSlotRef
             } else {
-                val wf = IosNumerals.widthFactor(ch, bubbly = true)
-                totalUnits += wf
-                val next = text.getOrNull(idx + 1)
+                val s = ch.toString()
+                numeralFillPaint.getTextBounds(s, 0, 1, textBounds)
+                val gw = max(textBounds.width().toFloat(), refDigitW * 0.54f)
+                glyphWidths[i] = gw
+                totalRefW += gw
+                val next = text.getOrNull(i + 1)
                 if (next != null && next != ':') {
-                    totalUnits += overlapRatio
-                } else if (next == ':') {
-                    totalUnits += postColonGap
+                    totalRefW += overlapPxRef
                 }
             }
-            if (ch == ':' && idx + 1 < text.length) {
-                totalUnits += postColonGap
-            }
         }
 
-        val maxDigitHeight = box.height * 0.94f
-        val unitByWidth = box.width / totalUnits.coerceAtLeast(1f)
-        val unitByHeight = maxDigitHeight / 1.40f
-        val unitW = min(unitByWidth, unitByHeight)
-        val digitH = unitW * 1.40f
-        val strokeW = min(unitW * 0.33f, digitH * 0.235f)
+        val scaleByH = (box.height * 0.88f) / refInkH
+        val scaleByW = (box.width * 0.96f) / totalRefW.coerceAtLeast(1f)
+        val scale = min(scaleByH, scaleByW)
+        val textSize = refSize * scale
+        val inkH = refInkH * scale
+        val overlapPx = overlapPxRef * scale
+        val colonSlotW = colonSlotRef * scale
+        val totalW = totalRefW * scale
 
-        val totalWidth = unitW * totalUnits
-        val startX = box.left + (box.width - totalWidth) * 0.5f
-        val topY = box.top + (box.height - digitH) * 0.5f
-        val bottomY = topY + digitH
+        numeralFillPaint.textSize = textSize
+        numeralOverlayPaint.typeface = floatFace
+        numeralOverlayPaint.textSize = textSize
 
-        val darkSurface = isDark(colors.background)
-        layerBounds.set(box.left, box.top, box.right, box.bottom)
+        var cursorX = box.centerX - totalW * 0.5f
+        val centerY = box.centerY
+        val colonCenters = ArrayList<Float>(2)
+
+        // Subtle organic vertical bounce & playful tilt — signature iOS StandBy Float feel
+        val dyPattern = floatArrayOf(-0.028f, 0.026f, -0.022f, 0.028f, -0.020f, 0.022f)
+        val rotPattern = floatArrayOf(-2.4f, 2.0f, -1.8f, 2.3f, -1.6f, 1.8f)
+
+        layerBounds.set(0f, 0f, width.toFloat(), height.toFloat())
         val layerId = canvas.saveLayer(layerBounds, null)
 
-        var cursorX = startX
-        var digitIndex = 0
-        val colonPositions = ArrayList<Float>(2)
-
-        text.forEachIndexed { idx, ch ->
+        var digitIdx = 0
+        for (i in text.indices) {
+            val ch = text[i]
             if (ch == ':') {
-                colonPositions.add(cursorX + unitW * colonRatio * 0.5f)
-                cursorX += unitW * (colonRatio + postColonGap)
-            } else {
-                val wf = IosNumerals.widthFactor(ch, bubbly = true)
-                val cellW = unitW * wf
-                IosNumerals.buildDigitPath(
-                    path = digitPath,
-                    digit = ch,
-                    left = cursorX,
-                    top = topY,
-                    right = cursorX + cellW,
-                    bottom = bottomY,
-                    strokeWidth = strokeW,
-                )
-
-                val baseColor = if (digitIndex % 2 == 0) colors.accent else colors.primary
-                val topTint = shiftLuminance(baseColor, if (darkSurface) 0.14f else -0.06f)
-                val bottomTint = shiftLuminance(baseColor, if (darkSurface) -0.10f else 0.08f)
-                val baseAlpha = if (digitIndex % 2 == 0) 238 else 216
-
-                strokeDigitPaint.xfermode = null
-                strokeDigitPaint.strokeWidth = strokeW
-                strokeDigitPaint.shader = LinearGradient(
-                    cursorX,
-                    topY,
-                    cursorX,
-                    bottomY,
-                    withExactAlpha(topTint, baseAlpha),
-                    withExactAlpha(bottomTint, baseAlpha),
-                    Shader.TileMode.CLAMP,
-                )
-                canvas.drawPath(digitPath, strokeDigitPaint)
-
-                // Screen-blended highlight pass produces the translucent overlap shimmer
-                // seen on iOS Float numerals without washing out light themes.
-                if (darkSurface && digitIndex % 2 == 1) {
-                    strokeDigitPaint.xfermode = screenBlendMode
-                    strokeDigitPaint.shader = null
-                    strokeDigitPaint.color = withExactAlpha(topTint, 68)
-                    canvas.drawPath(digitPath, strokeDigitPaint)
-                    strokeDigitPaint.xfermode = null
-                }
-
-                strokeDigitPaint.shader = null
-                val next = text.getOrNull(idx + 1)
-                cursorX += cellW + when {
-                    next == null -> 0f
-                    next == ':' -> unitW * postColonGap
-                    else -> unitW * overlapRatio
-                }
-                digitIndex++
+                colonCenters.add(cursorX + colonSlotW * 0.5f)
+                cursorX += colonSlotW
+                continue
             }
+
+            val s = ch.toString()
+            val slotW = glyphWidths[i] * scale
+            numeralFillPaint.getTextBounds(s, 0, 1, textBounds)
+            val gx = cursorX + slotW * 0.5f - textBounds.exactCenterX()
+            val dy = inkH * dyPattern[digitIdx % dyPattern.size]
+            val gy = centerY + dy - textBounds.exactCenterY()
+            val rot = rotPattern[digitIdx % rotPattern.size]
+
+            val baseColor = if (digitIdx % 2 == 0) pairA else pairB
+            val topColor = shiftLuminance(baseColor, if (darkSurface) 0.18f else -0.06f)
+            val botColor = shiftLuminance(baseColor, if (darkSurface) -0.12f else 0.08f)
+            val bodyAlpha = if (digitIdx % 2 == 0) 244 else 224
+
+            canvas.save()
+            canvas.rotate(rot, cursorX + slotW * 0.5f, centerY + dy)
+
+            // Primary luminous gradient body (alpha ALWAYS reset to 255 on Paint!)
+            numeralFillPaint.alpha = 255
+            numeralFillPaint.xfermode = null
+            numeralFillPaint.shader = LinearGradient(
+                cursorX, centerY - inkH * 0.55f,
+                cursorX + slotW * 0.35f, centerY + inkH * 0.55f,
+                withExactAlpha(topColor, bodyAlpha),
+                withExactAlpha(botColor, bodyAlpha),
+                Shader.TileMode.CLAMP,
+            )
+            canvas.drawText(s, gx, gy, numeralFillPaint)
+            numeralFillPaint.shader = null
+
+            // Translucent luminous shimmer on overlapping companion digits using SEPARATE paint
+            if (darkSurface && !nightRed && digitIdx % 2 == 1) {
+                numeralOverlayPaint.xfermode = screenBlendMode
+                numeralOverlayPaint.shader = null
+                numeralOverlayPaint.color = withExactAlpha(topColor, 58)
+                canvas.drawText(s, gx, gy, numeralOverlayPaint)
+                numeralOverlayPaint.xfermode = null
+                numeralOverlayPaint.alpha = 255
+            }
+
+            canvas.restore()
+
+            val next = text.getOrNull(i + 1)
+            cursorX += slotW + if (next != null && next != ':') overlapPx else 0f
+            digitIdx++
         }
 
-        // Plump frosted colon dots floating slightly tilted over the inner edges
-        val dotRadius = strokeW * 0.49f
+        // Refined frosted colon dots (proportionate, gently offset like real iOS Float)
+        val dotR = (inkH * 0.054f).coerceIn(5f, 42f)
         val dotColor = when {
-            theme.brightnessProfile == BrightnessProfile.NIGHT -> withAlpha(colors.accent, 0.88f)
-            darkSurface -> Color.argb(226, 244, 247, 252)
+            nightRed -> Color.argb(232, 255, 69, 58)
+            darkSurface -> Color.argb(240, 246, 249, 255)
             else -> withAlpha(colors.secondary, 0.85f)
         }
+        colonPaint.shader = null
         colonPaint.color = dotColor
-        for (cx in colonPositions) {
-            val tiltOffset = strokeW * 0.11f
-            canvas.drawCircle(cx + tiltOffset, topY + digitH * 0.36f, dotRadius, colonPaint)
-            canvas.drawCircle(cx - tiltOffset, topY + digitH * 0.64f, dotRadius, colonPaint)
+        for (cx in colonCenters) {
+            val tilt = dotR * 0.16f
+            canvas.drawCircle(cx + tilt, centerY - inkH * 0.145f, dotR, colonPaint)
+            canvas.drawCircle(cx - tilt, centerY + inkH * 0.145f, dotR, colonPaint)
         }
 
         canvas.restoreToCount(layerId)
-
-        if (suffix.isNotEmpty()) {
-            drawCompactSuffix(canvas, startX + totalWidth, topY, digitH, suffix, insideRight = box.right)
-        }
     }
 
-    /**
-     * iOS StandBy Classic Digital Split style: 60-tick rounded-squircle bezel around
-     * crisp, tall, isotropically proportioned rounded numerals with balanced colon dots.
-     */
-    private fun drawSplitTime(
+    // -------------------------------------------------------------------------
+    // Face 4: iOS 26/27 Liquid Glass + Solar Horizon Fullscreen Digital Clock
+    // -------------------------------------------------------------------------
+
+    private fun drawSolarGlassFace(
         canvas: Canvas,
         box: FaceBox,
-        text: String,
-        suffix: String,
-        minute: Int,
-        second: Int,
-        landscape: Boolean,
-    ) {
-        val innerBox = if (landscape) {
-            val activeTick = if (showSeconds) second else minute
-            val darkSurface = isDark(colors.background)
-            val litTick = withAlpha(
-                colors.primary,
-                if (darkSurface) 0.50f else 0.42f,
-            )
-            val dimTick = withAlpha(
-                colors.secondary,
-                if (darkSurface) 0.18f else 0.16f,
-            )
-            IosNumerals.drawSquircleTickRing(
-                canvas = canvas,
-                box = box,
-                activeTick = activeTick,
-                litColor = litTick,
-                dimColor = dimTick,
-                paint = tickPaint,
-                ringPath = ringPath,
-                rectScratch = rectScratch,
-            )
-            val padX = box.width * 0.115f
-            val padY = box.height * 0.155f
-            FaceBox(box.left + padX, box.top + padY, box.right - padX, box.bottom - padY)
-        } else {
-            box
-        }
-
-        if (theme.font == FontChoice.DISPLAY || theme.font == FontChoice.ROUNDED) {
-            drawRoundedDigitalDigits(canvas, innerBox, text, suffix)
-            return
-        }
-
-        // Explicit user-chosen system fonts (Condensed, Sans, Serif, Mono, Light):
-        // strictly uniform scaling with sleek optical colon dots.
-        val face = typefaceFor(theme)
-        timePaint.typeface = face
-        timePaint.color = colors.primary
-        var size = innerBox.height * 0.84f
-        timePaint.textSize = size
-        val measuredW = timePaint.measureText(text)
-        size *= ClockTypography.shrinkFactor(measuredW, innerBox.width * 0.94f)
-        timePaint.textSize = size
-        val finalW = timePaint.measureText(text)
-        val x = innerBox.left + (innerBox.width - finalW) * 0.5f
-        val baseline = innerBox.top + (innerBox.height - (timePaint.ascent() + timePaint.descent())) * 0.5f
-        canvas.drawText(text, x, baseline, timePaint)
-
-        if (suffix.isNotEmpty()) {
-            drawCompactSuffix(
-                canvas,
-                x + finalW,
-                innerBox.top + innerBox.height * 0.12f,
-                innerBox.height * 0.76f,
-                suffix,
-                insideRight = box.right - box.width * 0.06f,
-            )
-        }
-    }
-
-    private fun drawRoundedDigitalDigits(
-        canvas: Canvas,
-        box: FaceBox,
-        text: String,
-        suffix: String,
-    ) {
-        val gapRatio = 0.085f
-        val colonRatio = 0.28f
-
-        var totalUnits = 0f
-        text.forEachIndexed { idx, ch ->
-            totalUnits += if (ch == ':') colonRatio else IosNumerals.widthFactor(ch, bubbly = false)
-            if (idx + 1 < text.length) totalUnits += gapRatio
-        }
-
-        val maxDigitH = box.height * 0.90f
-        val unitByWidth = box.width / totalUnits.coerceAtLeast(1f)
-        val unitByHeight = maxDigitH / 1.64f
-        val unitW = min(unitByWidth, unitByHeight)
-        val digitH = unitW * 1.64f
-        val strokeW = min(unitW * 0.275f, digitH * 0.168f)
-
-        val totalW = unitW * totalUnits
-        var cursorX = box.left + (box.width - totalW) * 0.5f
-        val topY = box.top + (box.height - digitH) * 0.5f
-        val bottomY = topY + digitH
-
-        strokeDigitPaint.xfermode = null
-        strokeDigitPaint.shader = null
-        strokeDigitPaint.color = colors.primary
-        strokeDigitPaint.strokeWidth = strokeW
-        colonPaint.color = colors.primary
-        val dotRadius = strokeW * 0.52f
-
-        text.forEachIndexed { idx, ch ->
-            if (ch == ':') {
-                val cx = cursorX + unitW * colonRatio * 0.5f
-                canvas.drawCircle(cx, topY + digitH * 0.36f, dotRadius, colonPaint)
-                canvas.drawCircle(cx, topY + digitH * 0.64f, dotRadius, colonPaint)
-                cursorX += unitW * colonRatio
-            } else {
-                val wf = IosNumerals.widthFactor(ch, bubbly = false)
-                val cellW = unitW * wf
-                IosNumerals.buildDigitPath(
-                    path = digitPath,
-                    digit = ch,
-                    left = cursorX,
-                    top = topY,
-                    right = cursorX + cellW,
-                    bottom = bottomY,
-                    strokeWidth = strokeW,
-                )
-                canvas.drawPath(digitPath, strokeDigitPaint)
-                cursorX += cellW
-            }
-            if (idx + 1 < text.length) cursorX += unitW * gapRatio
-        }
-
-        if (suffix.isNotEmpty()) {
-            drawCompactSuffix(canvas, cursorX, topY, digitH, suffix, insideRight = box.right)
-        }
-    }
-
-    private fun drawCompactSuffix(
-        canvas: Canvas,
-        anchorRight: Float,
-        topY: Float,
-        digitH: Float,
-        suffix: String,
-        insideRight: Float,
-    ) {
-        suffixPaint.typeface = mediumSans
-        suffixPaint.textSize = (digitH * 0.11f).coerceAtLeast(11f)
-        suffixPaint.color = withAlpha(colors.secondary, 0.78f)
-        val sw = suffixPaint.measureText(suffix)
-        val x = (anchorRight + suffixPaint.textSize * 0.25f).coerceAtMost(insideRight - sw)
-        val y = topY + suffixPaint.textSize * 0.95f
-        canvas.drawText(suffix, x, y, suffixPaint)
-    }
-
-    /**
-     * iOS StandBy date typography:
-     * - Accent-coloured weekday/month header (`THU · NOV` / `周四 · 11月`)
-     * - Hero rounded day numeral in Split mode when the right column has no widgets,
-     *   or a clean two-tone rail header above placed widget cards.
-     */
-    private fun drawDate(
-        canvas: Canvas,
-        layout: FaceLayout,
         now: Calendar,
-        landscape: Boolean,
-        hasRightWidgets: Boolean,
+        nightRed: Boolean,
+        darkSurface: Boolean,
+    ) {
+        val hour24 = now.get(Calendar.HOUR_OF_DAY)
+        val hour = if (use24Hour) hour24 else (hour24 % 12).let { if (it == 0) 12 else it }
+        val minute = now.get(Calendar.MINUTE)
+        val second = now.get(Calendar.SECOND)
+        val hourText = if (use24Hour) String.format(Locale.US, "%02d", hour) else hour.toString()
+        val minuteText = String.format(Locale.US, "%02d", minute)
+        val secText = if (showSeconds) String.format(Locale.US, ":%02d", second) else ""
+        val fullSample = "$hourText:$minuteText$secText"
+
+        val face = clockTypefaceForSplit()
+        val refSize = 300f
+        numeralFillPaint.typeface = face
+        numeralFillPaint.textSize = refSize
+        numeralFillPaint.shader = null
+        numeralFillPaint.alpha = 255
+        numeralFillPaint.getTextBounds("88", 0, 2, textBounds)
+        val refInkH = textBounds.height().toFloat().coerceAtLeast(1f)
+        val refTotalW = numeralFillPaint.measureText(fullSample).coerceAtLeast(1f)
+
+        val scaleByH = (box.height * 0.72f) / refInkH
+        val scaleByW = (box.width * 0.90f) / refTotalW
+        val textSize = refSize * min(scaleByH, scaleByW)
+
+        numeralFillPaint.textSize = textSize
+        numeralRimPaint.typeface = face
+        numeralRimPaint.textSize = textSize
+        numeralOverlayPaint.typeface = face
+        numeralOverlayPaint.textSize = textSize
+
+        val hourW = numeralFillPaint.measureText(hourText)
+        val minW = numeralFillPaint.measureText(minuteText)
+        val secW = if (secText.isNotEmpty()) numeralFillPaint.measureText(secText) else 0f
+        val colonGap = textSize * 0.24f
+        val totalW = hourW + colonGap + minW + secW
+
+        numeralFillPaint.getTextBounds("88", 0, 2, textBounds)
+        val inkH = textBounds.height().toFloat()
+        val centerY = box.centerY - box.height * 0.02f
+        val baseline = centerY - textBounds.exactCenterY()
+        val startX = box.centerX - totalW * 0.5f
+
+        val topY = centerY - inkH * 0.52f
+        val botY = centerY + inkH * 0.52f
+
+        // Render Liquid Glass numerals (soft depth shadow -> frosted translucent glass fill ->
+        // pure exterior specular rim punched out via DST_OUT so overlapping TTF contours never show!).
+        fun drawGlassRun(runText: String, x: Float) {
+            // 1. Subtle elevation shadow
+            if (darkSurface && !nightRed) {
+                numeralOverlayPaint.xfermode = null
+                numeralOverlayPaint.shader = null
+                numeralOverlayPaint.color = Color.argb(86, 0, 0, 0)
+                canvas.drawText(runText, x, baseline + inkH * 0.026f, numeralOverlayPaint)
+            }
+
+            // 2. Frosted translucent Liquid Glass body gradient
+            val glassTop = when {
+                nightRed -> Color.argb(228, 255, 69, 58)
+                darkSurface -> Color.argb(220, 255, 255, 255)
+                else -> colors.primary
+            }
+            val glassBot = when {
+                nightRed -> Color.argb(145, 190, 28, 22)
+                darkSurface -> Color.argb(118, 255, 240, 226)
+                else -> shiftLuminance(colors.primary, 0.14f)
+            }
+            numeralFillPaint.alpha = 255
+            numeralFillPaint.xfermode = null
+            numeralFillPaint.shader = LinearGradient(x, topY, x, botY, glassTop, glassBot, Shader.TileMode.CLAMP)
+            canvas.drawText(runText, x, baseline, numeralFillPaint)
+            numeralFillPaint.shader = null
+
+            // 3. Pure exterior Liquid Glass specular refraction rim (zero internal TTF triangles)
+            if (darkSurface) {
+                val rimW = (inkH * 0.011f).coerceIn(1.6f, 4.0f)
+                layerBounds.set(box.left, box.top, box.right, box.bottom)
+                val rimLayer = canvas.saveLayer(layerBounds, null)
+                numeralRimPaint.alpha = 255
+                numeralRimPaint.xfermode = null
+                numeralRimPaint.strokeWidth = rimW * 2f
+                numeralRimPaint.shader = LinearGradient(
+                    x, topY, x + inkH * 0.75f, botY,
+                    intArrayOf(
+                        if (nightRed) Color.argb(190, 255, 115, 105) else Color.argb(235, 255, 255, 255),
+                        if (nightRed) Color.argb(35, 255, 69, 58) else Color.argb(42, 255, 255, 255),
+                        if (nightRed) Color.argb(105, 255, 69, 58) else Color.argb(150, 255, 240, 225),
+                    ),
+                    floatArrayOf(0f, 0.48f, 1f),
+                    Shader.TileMode.CLAMP,
+                )
+                canvas.drawText(runText, x, baseline, numeralRimPaint)
+                numeralRimPaint.shader = null
+
+                // Punch out the interior fill so ONLY the crisp exterior glass edge remains
+                numeralOverlayPaint.shader = null
+                numeralOverlayPaint.color = Color.BLACK
+                numeralOverlayPaint.xfermode = dstOutBlendMode
+                canvas.drawText(runText, x, baseline, numeralOverlayPaint)
+                numeralOverlayPaint.xfermode = null
+                numeralOverlayPaint.alpha = 255
+                canvas.restoreToCount(rimLayer)
+            }
+        }
+
+        drawGlassRun(hourText, startX)
+        drawGlassRun(minuteText, startX + hourW + colonGap)
+        if (secText.isNotEmpty()) {
+            drawGlassRun(secText, startX + hourW + colonGap + minW)
+        }
+
+        // Optical frosted glass colon dots centered on ink vertical center
+        val colonX = startX + hourW + colonGap * 0.5f
+        val dotR = (inkH * 0.052f).coerceIn(4f, 26f)
+        colonPaint.shader = LinearGradient(
+            colonX, centerY - inkH * 0.22f, colonX, centerY + inkH * 0.22f,
+            if (nightRed) Color.argb(220, 255, 69, 58) else if (darkSurface) Color.argb(225, 255, 255, 255) else colors.primary,
+            if (nightRed) Color.argb(150, 200, 32, 24) else if (darkSurface) Color.argb(155, 210, 226, 245) else colors.secondary,
+            Shader.TileMode.CLAMP,
+        )
+        canvas.drawCircle(colonX, centerY - inkH * 0.16f, dotR, colonPaint)
+        canvas.drawCircle(colonX, centerY + inkH * 0.16f, dotR, colonPaint)
+        colonPaint.shader = null
+    }
+
+    // -------------------------------------------------------------------------
+    // Top Bar for Fullscreen Clocks (FLOAT & SOLAR): Date + Compact Glass Pills
+    // -------------------------------------------------------------------------
+
+    private fun drawFullscreenTopBar(
+        canvas: Canvas,
+        box: FaceBox,
+        now: Calendar,
+        tiles: List<WidgetTile>,
+        nightRed: Boolean,
+        darkSurface: Boolean,
+        rightAlignedDate: Boolean,
     ) {
         val date = now.time
         val locale = Locale.getDefault()
         val weekday = weekdayFormatter.format(date).uppercase(locale)
-        val month = monthFormatter.format(date).uppercase(locale)
         val dayNum = now.get(Calendar.DAY_OF_MONTH).toString()
+        val fullDate = fullDateFormatter.format(date)
 
-        if (!landscape) {
-            val box = layout.date
-            val fullText = fullDateFormatter.format(date)
-            dateHeaderPaint.typeface = mediumSans
-            dateHeaderPaint.textAlign = Paint.Align.CENTER
-            var size = box.height * 0.42f
-            dateHeaderPaint.textSize = size
-            size *= ClockTypography.shrinkFactor(dateHeaderPaint.measureText(fullText), box.width)
-            dateHeaderPaint.textSize = size
-            dateHeaderPaint.color = colors.accent
-            val y = box.top + (box.height - (dateHeaderPaint.ascent() + dateHeaderPaint.descent())) * 0.5f
-            canvas.drawText(fullText, box.left + box.width * 0.5f, y, dateHeaderPaint)
-            dateHeaderPaint.textAlign = Paint.Align.LEFT
-            return
+        val accentColor = if (nightRed) Color.parseColor("#FF453A") else colors.accent
+        val textColor = when {
+            nightRed -> Color.parseColor("#FF3B30")
+            darkSurface -> Color.argb(235, 255, 255, 255)
+            else -> colors.primary
         }
 
-        // Float without widgets: sleek floating accent badge in top-right.
-        if (theme.faceStyle == FaceStyle.FLOAT && !hasRightWidgets && widgetTiles.isEmpty()) {
-            val box = layout.date
-            dateHeaderPaint.typeface = boldSans
+        dateHeaderPaint.typeface = roundedBold
+        val fontSize = (box.height * 0.44f).coerceIn(13f, 52f)
+        dateHeaderPaint.textSize = fontSize
+        val baseline = box.centerY - (dateHeaderPaint.ascent() + dateHeaderPaint.descent()) * 0.5f
+
+        if (rightAlignedDate) {
+            // Top-right crisp `周五 20` (iconic Float badge)
             dateHeaderPaint.textAlign = Paint.Align.RIGHT
-            var size = box.height * 0.48f
-            val label = "$weekday  $dayNum"
-            dateHeaderPaint.textSize = size
-            size *= ClockTypography.shrinkFactor(dateHeaderPaint.measureText(label), box.width)
-            dateHeaderPaint.textSize = size
-
-            val dayW = dateHeaderPaint.measureText(" $dayNum")
-            val y = box.top + (box.height - (dateHeaderPaint.ascent() + dateHeaderPaint.descent())) * 0.5f
-            dateHeaderPaint.color = colors.primary
-            canvas.drawText(dayNum, box.right, y, dateHeaderPaint)
-            dateHeaderPaint.color = colors.accent
-            canvas.drawText(weekday, box.right - dayW, y, dateHeaderPaint)
+            val dayW = dateHeaderPaint.measureText("  $dayNum")
+            dateHeaderPaint.color = textColor
+            canvas.drawText(dayNum, box.right, baseline, dateHeaderPaint)
+            dateHeaderPaint.color = accentColor
+            canvas.drawText(weekday, box.right - dayW, baseline, dateHeaderPaint)
             dateHeaderPaint.textAlign = Paint.Align.LEFT
-            return
-        }
 
-        // Split (or Float with left-only widget) when right rail has NO widgets:
-        // render the iconic iOS StandBy Calendar Hero (accent `THU · NOV` + giant rounded `19`).
-        if (!hasRightWidgets) {
-            val railLeft = layout.date.left
-            val railRight = layout.date.right
-            val railWidth = railRight - railLeft
-            val stageTop = layout.clock.top + layout.clock.height * 0.12f
-            val stageBottom = layout.clock.bottom - layout.clock.height * 0.08f
-            val stageH = (stageBottom - stageTop).coerceAtLeast(1f)
-
-            val header = "$weekday · $month"
-            dateHeaderPaint.typeface = boldSans
+            // Compact Liquid Glass widget pills aligned top-left (if widgets are active)
+            if (tiles.isNotEmpty()) {
+                val maxW = (box.width - dateHeaderPaint.measureText("$weekday  $dayNum") - box.height * 0.5f).coerceAtLeast(0f)
+                drawCompactGlassPills(canvas, box.left, box.top, maxW, box.height, tiles.take(3), nightRed, darkSurface, alignRight = false)
+            }
+        } else {
+            // Left-aligned full date (`11月20日 星期五`) + right-aligned compact glass widget pills
             dateHeaderPaint.textAlign = Paint.Align.LEFT
-            var headerSize = stageH * 0.145f
-            dateHeaderPaint.textSize = headerSize
-            headerSize *= ClockTypography.shrinkFactor(dateHeaderPaint.measureText(header), railWidth)
-            dateHeaderPaint.textSize = headerSize
-            dateHeaderPaint.color = colors.accent
-            val headerBaseline = stageTop - dateHeaderPaint.ascent()
-            canvas.drawText(header, railLeft, headerBaseline, dateHeaderPaint)
+            dateHeaderPaint.color = withAlpha(textColor, 0.88f)
+            val dateW = dateHeaderPaint.measureText(fullDate)
+            canvas.drawText(fullDate, box.left, baseline, dateHeaderPaint)
 
-            // Giant rounded day numeral below the coloured weekday header
-            val numTop = headerBaseline + dateHeaderPaint.descent() + stageH * 0.06f
-            val numH = (stageBottom - numTop).coerceAtLeast(16f)
-            drawRoundedDayNumber(canvas, railLeft, numTop, railWidth * 0.88f, numH, dayNum)
-            return
+            if (tiles.isNotEmpty()) {
+                val maxW = (box.width - dateW - box.height * 0.5f).coerceAtLeast(0f)
+                drawCompactGlassPills(canvas, box.right - maxW, box.top, maxW, box.height, tiles.take(3), nightRed, darkSurface, alignRight = true)
+            }
         }
-
-        // Right rail WITH widgets: compact two-tone iOS StandBy header inside layout.date
-        val box = layout.date
-        val header = "$weekday · $month"
-        dateNumberPaint.typeface = boldSans
-        dateNumberPaint.textSize = box.height * 0.68f
-        dateNumberPaint.color = colors.primary
-        val numWidth = dateNumberPaint.measureText(dayNum)
-        val numBaseline = box.top + (box.height - (dateNumberPaint.ascent() + dateNumberPaint.descent())) * 0.5f
-        canvas.drawText(dayNum, box.left, numBaseline, dateNumberPaint)
-
-        val textLeft = box.left + numWidth + box.height * 0.22f
-        val avail = (box.right - textLeft).coerceAtLeast(1f)
-        dateHeaderPaint.typeface = boldSans
-        dateHeaderPaint.textAlign = Paint.Align.LEFT
-        var labelSize = box.height * 0.29f
-        dateHeaderPaint.textSize = labelSize
-        labelSize *= ClockTypography.shrinkFactor(dateHeaderPaint.measureText(header), avail)
-        dateHeaderPaint.textSize = labelSize
-        dateHeaderPaint.color = colors.accent
-        val headerY = box.top + box.height * 0.58f
-        canvas.drawText(header, textLeft, headerY, dateHeaderPaint)
     }
 
-    private fun drawRoundedDayNumber(
+    private fun drawCompactGlassPills(
         canvas: Canvas,
-        left: Float,
-        top: Float,
+        areaLeft: Float,
+        areaTop: Float,
         maxWidth: Float,
-        height: Float,
-        dayText: String,
+        areaHeight: Float,
+        tiles: List<WidgetTile>,
+        nightRed: Boolean,
+        darkSurface: Boolean,
+        alignRight: Boolean,
     ) {
-        val gapRatio = 0.11f
-        var units = 0f
-        dayText.forEachIndexed { idx, ch ->
-            units += IosNumerals.widthFactor(ch, bubbly = false)
-            if (idx + 1 < dayText.length) units += gapRatio
+        if (maxWidth < areaHeight * 1.4f || tiles.isEmpty()) return
+        val pillH = areaHeight * 0.72f
+        val pillTop = areaTop + (areaHeight - pillH) * 0.5f
+        val pillGap = pillH * 0.24f
+        val padX = pillH * 0.36f
+        val iconSize = pillH * 0.50f
+        val iconGap = pillH * 0.20f
+
+        widgetSecondaryPaint.typeface = roundedBold
+        widgetSecondaryPaint.textSize = pillH * 0.46f
+
+        data class PillSpec(val tile: WidgetTile, val label: String, val width: Float)
+        val specs = ArrayList<PillSpec>(tiles.size)
+        var usedW = 0f
+        for (tile in tiles) {
+            val c = tile.content
+            val shortLabel = when (c.kind) {
+                WidgetKind.WEATHER_HERO -> {
+                    val city = c.secondary?.substringBefore(" · ")?.trim().orEmpty()
+                    if (city.isNotEmpty()) "$city ${c.primary}" else c.primary
+                }
+                else -> c.primary
+            }
+            val textW = widgetSecondaryPaint.measureText(shortLabel).coerceAtMost(maxWidth * 0.45f)
+            val glyphW = if (c.glyph != WidgetGlyph.NONE) iconSize + iconGap else 0f
+            val pw = padX * 2f + glyphW + textW
+            val nextUsed = usedW + (if (specs.isNotEmpty()) pillGap else 0f) + pw
+            if (nextUsed > maxWidth) break
+            specs.add(PillSpec(tile, shortLabel, pw))
+            usedW = nextUsed
         }
-        val unitW = min(maxWidth / units.coerceAtLeast(1f), height / 1.52f)
-        val digitH = unitW * 1.52f
-        val strokeW = min(unitW * 0.24f, digitH * 0.155f)
 
-        strokeDigitPaint.xfermode = null
-        strokeDigitPaint.shader = null
-        strokeDigitPaint.color = colors.primary
-        strokeDigitPaint.strokeWidth = strokeW
+        var cursorX = if (alignRight) areaLeft + maxWidth - usedW else areaLeft
+        for (spec in specs) {
+            val pillBox = FaceBox(cursorX, pillTop, cursorX + spec.width, pillTop + pillH)
+            val fillTop = when {
+                nightRed -> Color.argb(38, 255, 59, 48)
+                darkSurface -> Color.argb(34, 255, 255, 255)
+                else -> Color.argb(18, 0, 0, 0)
+            }
+            val fillBot = when {
+                nightRed -> Color.argb(22, 255, 59, 48)
+                darkSurface -> Color.argb(18, 255, 255, 255)
+                else -> Color.argb(12, 0, 0, 0)
+            }
+            drawGlassCard(canvas, pillBox, pillH * 0.5f, fillTop, fillBot, nightRed, darkSurface)
 
-        var cx = left
-        dayText.forEachIndexed { idx, ch ->
-            val cellW = unitW * IosNumerals.widthFactor(ch, bubbly = false)
-            IosNumerals.buildDigitPath(
-                path = digitPath,
-                digit = ch,
-                left = cx,
-                top = top,
-                right = cx + cellW,
-                bottom = top + digitH,
-                strokeWidth = strokeW,
-            )
-            canvas.drawPath(digitPath, strokeDigitPaint)
-            cx += cellW + if (idx + 1 < dayText.length) unitW * gapRatio else 0f
+            var tx = pillBox.left + padX
+            val c = spec.tile.content
+            if (c.glyph != WidgetGlyph.NONE) {
+                val iconColor = glyphAccentColor(c, nightRed, darkSurface)
+                WidgetIcons.draw(
+                    canvas = canvas,
+                    glyph = c.glyph,
+                    x = tx,
+                    y = pillBox.centerY - iconSize * 0.5f,
+                    size = iconSize,
+                    color = iconColor,
+                    secondaryColor = if (nightRed) Color.parseColor("#FF453A") else Color.WHITE,
+                    nightRed = nightRed,
+                )
+                tx += iconSize + iconGap
+            }
+            val avail = (pillBox.right - padX - tx).coerceAtLeast(1f)
+            widgetSecondaryPaint.color = when {
+                nightRed -> Color.parseColor("#FF453A")
+                darkSurface -> Color.argb(235, 255, 255, 255)
+                else -> colors.primary
+            }
+            val clipped = TextUtils.ellipsize(spec.label, widgetSecondaryPaint, avail, TextUtils.TruncateAt.END).toString()
+            val y = pillBox.centerY - (widgetSecondaryPaint.ascent() + widgetSecondaryPaint.descent()) * 0.5f
+            canvas.drawText(clipped, tx, y, widgetSecondaryPaint)
+
+            cursorX += spec.width + pillGap
         }
     }
 
-    private fun drawWidgets(
+    // -------------------------------------------------------------------------
+    // Dual-View Right Stage (ANALOG & SPLIT): Calendar Hero OR 1/2/3 Cards
+    // -------------------------------------------------------------------------
+
+    private fun drawDualRightStage(
         canvas: Canvas,
         layout: FaceLayout,
+        now: Calendar,
         rightWidgets: List<WidgetTile>,
+        nightRed: Boolean,
+        darkSurface: Boolean,
     ) {
-        if (widgetTiles.isEmpty()) return
-        val leftWidgets = widgetTiles.filter { it.slot == WidgetSlot.BOTTOM_LEFT }
-
-        if (rightWidgets.isNotEmpty() && layout.rightTiles.isNotEmpty()) {
-            val visibleRight = rightWidgets.take(layout.rightTiles.size)
-            val boxes = distributeRightBoxes(layout.rightTiles, visibleRight.size)
-            visibleRight.forEachIndexed { i, tile ->
-                drawTile(canvas, tile, boxes[i], compactFooter = false)
-            }
+        if (rightWidgets.isEmpty()) {
+            // Iconic iOS StandBy Calendar Hero Square (with mini month calendar grid!)
+            drawCalendarHeroSquare(canvas, layout.date, now, nightRed, darkSurface)
+            return
         }
-        layout.leftTile?.let { box ->
-            leftWidgets.firstOrNull()?.let { tile ->
-                drawTile(canvas, tile, box, compactFooter = true)
-            }
+
+        val visible = rightWidgets.take(3)
+        val boxes = distributeRightBoxes(layout.rightTiles, visible.size)
+        val heroSquare = visible.size == 1
+        visible.forEachIndexed { i, tile ->
+            drawWidgetCard(canvas, tile, boxes[i], now, heroSquare, nightRed, darkSurface)
         }
     }
 
     /**
-     * Gives 1 or 2 placed right-rail widgets proportional breathing room inside the
-     * reserved right-rail envelope while strictly staying inside `rightTiles` bounds.
+     * 1:1 iOS StandBy Calendar Hero Square:
+     * Top row pairs oversized crisp day numeral with accent weekday & month;
+     * Bottom 56% renders an authentic 7-column current-month grid with today circled.
      */
+    private fun drawCalendarHeroSquare(
+        canvas: Canvas,
+        box: FaceBox,
+        now: Calendar,
+        nightRed: Boolean,
+        darkSurface: Boolean,
+    ) {
+        val cornerR = min(box.width, box.height) * 0.175f
+        val topFill = when {
+            nightRed -> Color.parseColor("#0D0202")
+            darkSurface -> Color.parseColor("#1D1E24")
+            else -> Color.parseColor("#F5F6F9")
+        }
+        val botFill = when {
+            nightRed -> Color.BLACK
+            darkSurface -> Color.parseColor("#101116")
+            else -> Color.parseColor("#E6E8EF")
+        }
+        drawGlassCard(canvas, box, cornerR, topFill, botFill, nightRed, darkSurface)
+
+        val padX = box.width * 0.095f
+        val padTop = box.height * 0.085f
+        val padBot = box.height * 0.075f
+        val innerLeft = box.left + padX
+        val innerRight = box.right - padX
+        val innerW = (innerRight - innerLeft).coerceAtLeast(1f)
+
+        val locale = Locale.getDefault()
+        val isZh = locale.language.startsWith("zh")
+        val weekday = weekdayFormatter.format(now.time).uppercase(locale)
+        val month = monthFormatter.format(now.time).uppercase(locale)
+        val dayNum = now.get(Calendar.DAY_OF_MONTH).toString()
+
+        val accentColor = when {
+            nightRed -> Color.parseColor("#FF453A")
+            !darkSurface -> colors.accent
+            isNearWhite(colors.accent) -> Color.parseColor("#FF453A")
+            else -> colors.accent
+        }
+        val primaryText = when {
+            nightRed -> Color.parseColor("#FF3B30")
+            darkSurface -> Color.WHITE
+            else -> colors.primary
+        }
+        val mutedText = when {
+            nightRed -> Color.argb(135, 255, 59, 48)
+            darkSurface -> Color.argb(135, 255, 255, 255)
+            else -> withAlpha(colors.secondary, 0.78f)
+        }
+
+        // Top Header Band (0..36%): Huge day numeral on left + stacked accent Weekday & Month on right
+        val headerH = box.height * 0.275f
+        val headerTop = box.top + padTop
+        val headerMidY = headerTop + headerH * 0.5f
+
+        numeralFillPaint.shader = null
+        numeralFillPaint.alpha = 255
+        numeralFillPaint.xfermode = null
+        numeralFillPaint.typeface = roundedExtraBold
+        numeralFillPaint.textSize = headerH * 1.02f
+        numeralFillPaint.getTextBounds(dayNum, 0, dayNum.length, textBounds)
+        val dayScale = min((headerH * 0.88f) / textBounds.height().toFloat().coerceAtLeast(1f), (innerW * 0.44f) / textBounds.width().toFloat().coerceAtLeast(1f))
+        numeralFillPaint.textSize = headerH * 1.02f * dayScale
+        numeralFillPaint.getTextBounds(dayNum, 0, dayNum.length, textBounds)
+        numeralFillPaint.color = primaryText
+        val dayDrawX = innerLeft - textBounds.left
+        val dayDrawY = headerMidY - textBounds.exactCenterY()
+        canvas.drawText(dayNum, dayDrawX, dayDrawY, numeralFillPaint)
+
+        val metaLeft = innerLeft + textBounds.width() + innerW * 0.075f
+        val metaAvail = (innerRight - metaLeft).coerceAtLeast(1f)
+        dateHeaderPaint.typeface = roundedExtraBold
+        dateHeaderPaint.textAlign = Paint.Align.LEFT
+        var wkSize = headerH * 0.34f
+        dateHeaderPaint.textSize = wkSize
+        wkSize *= ClockTypography.shrinkFactor(dateHeaderPaint.measureText(weekday), metaAvail)
+        dateHeaderPaint.textSize = wkSize
+        dateHeaderPaint.color = accentColor
+        canvas.drawText(weekday, metaLeft, headerMidY - headerH * 0.06f, dateHeaderPaint)
+
+        dateHeaderPaint.typeface = roundedBold
+        var moSize = headerH * 0.24f
+        dateHeaderPaint.textSize = moSize
+        moSize *= ClockTypography.shrinkFactor(dateHeaderPaint.measureText(month), metaAvail)
+        dateHeaderPaint.textSize = moSize
+        dateHeaderPaint.color = mutedText
+        canvas.drawText(month, metaLeft, headerMidY + headerH * 0.30f, dateHeaderPaint)
+
+        // Subtle translucent divider
+        val divY = box.top + box.height * 0.395f
+        dialStrokePaint.strokeWidth = 1.4f
+        dialStrokePaint.color = if (nightRed) Color.argb(42, 255, 59, 48) else if (darkSurface) Color.argb(26, 255, 255, 255) else Color.argb(24, 0, 0, 0)
+        canvas.drawLine(innerLeft, divY, innerRight, divY, dialStrokePaint)
+
+        // Lower Mini Month Calendar Grid (7 columns x 7 rows: weekday headers + up to 6 weeks)
+        val gridTop = divY + box.height * 0.032f
+        val gridBottom = box.bottom - padBot
+        val gridH = (gridBottom - gridTop).coerceAtLeast(1f)
+        val colW = innerW / 7f
+
+        val cal = (now.clone() as Calendar).apply { set(Calendar.DAY_OF_MONTH, 1) }
+        val firstDayOffset = cal.get(Calendar.DAY_OF_WEEK) - Calendar.SUNDAY // 0=Sun..6=Sat
+        val daysInMonth = cal.getActualMaximum(Calendar.DAY_OF_MONTH)
+        val today = now.get(Calendar.DAY_OF_MONTH)
+        val totalWeeks = ((firstDayOffset + daysInMonth + 6) / 7).coerceIn(4, 6)
+        val rowCount = totalWeeks + 1
+        val rowH = gridH / rowCount
+
+        val dayLabels = if (isZh) arrayOf("日", "一", "二", "三", "四", "五", "六") else arrayOf("S", "M", "T", "W", "T", "F", "S")
+        dateHeaderPaint.typeface = roundedBold
+        dateHeaderPaint.textAlign = Paint.Align.CENTER
+        dateHeaderPaint.textSize = min(rowH * 0.44f, colW * 0.42f)
+        val headY = gridTop + rowH * 0.5f - (dateHeaderPaint.ascent() + dateHeaderPaint.descent()) * 0.5f
+        for (col in 0 until 7) {
+            dateHeaderPaint.color = if (col == 0 || col == 6) withAlpha(accentColor, 0.72f) else mutedText
+            canvas.drawText(dayLabels[col], innerLeft + colW * (col + 0.5f), headY, dateHeaderPaint)
+        }
+
+        val cellFontSize = min(rowH * 0.50f, colW * 0.46f)
+        dateHeaderPaint.textSize = cellFontSize
+        val pillR = min(rowH, colW) * 0.41f
+        for (d in 1..daysInMonth) {
+            val slot = firstDayOffset + (d - 1)
+            val row = 1 + slot / 7
+            val col = slot % 7
+            val cx = innerLeft + colW * (col + 0.5f)
+            val cy = gridTop + rowH * (row + 0.5f)
+            val isToday = d == today
+
+            if (isToday) {
+                dialFillPaint.shader = null
+                dialFillPaint.color = accentColor
+                canvas.drawCircle(cx, cy, pillR, dialFillPaint)
+                dateHeaderPaint.typeface = roundedExtraBold
+                dateHeaderPaint.color = if (nightRed) Color.BLACK else Color.WHITE
+            } else {
+                dateHeaderPaint.typeface = roundedBold
+                dateHeaderPaint.color = if (col == 0 || col == 6) withAlpha(primaryText, 0.56f) else withAlpha(primaryText, 0.86f)
+            }
+            val label = d.toString()
+            dateHeaderPaint.getTextBounds(label, 0, label.length, textBounds)
+            canvas.drawText(label, cx, cy - textBounds.exactCenterY(), dateHeaderPaint)
+        }
+        dateHeaderPaint.textAlign = Paint.Align.LEFT
+    }
+
+    // -------------------------------------------------------------------------
+    // Widget Cards (Full Hero Square OR Stacked Medium/Compact Cards)
+    // -------------------------------------------------------------------------
+
     private fun distributeRightBoxes(template: List<FaceBox>, count: Int): List<FaceBox> {
         if (count <= 0 || template.isEmpty()) return emptyList()
-        if (count >= template.size) return template.take(count)
-
         val left = template.first().left
         val right = template.first().right
         val top = template.first().top
         val bottom = template.last().bottom
         val span = bottom - top
 
-        return if (count == 1) {
-            val cardH = min(span * 0.56f, (right - left) * 0.52f)
-            listOf(FaceBox(left, top + span * 0.04f, right, top + span * 0.04f + cardH))
-        } else {
-            val gap = span * 0.06f
-            val cardH = (span - gap) * 0.5f
-            listOf(
-                FaceBox(left, top, right, top + cardH),
-                FaceBox(left, top + cardH + gap, right, bottom),
-            )
+        return when (count) {
+            1 -> listOf(FaceBox(left, top, right, bottom)) // Full-size Hero Square flush with left clock!
+            2 -> {
+                val gap = span * 0.055f
+                val cardH = (span - gap) * 0.5f
+                listOf(
+                    FaceBox(left, top, right, top + cardH),
+                    FaceBox(left, top + cardH + gap, right, bottom),
+                )
+            }
+            else -> template.take(count)
         }
     }
 
-    private fun drawTile(
+    private fun drawWidgetCard(
         canvas: Canvas,
         tile: WidgetTile,
         box: FaceBox,
-        compactFooter: Boolean,
+        now: Calendar,
+        heroSquare: Boolean,
+        nightRed: Boolean,
+        darkSurface: Boolean,
     ) {
-        if (compactFooter) {
-            drawCompactFooterTile(canvas, tile, box)
-            return
-        }
-
-        val darkSurface = isDark(colors.background)
-        val cornerR = min(box.height * 0.26f, box.width * 0.08f)
-        rectScratch.set(box.left, box.top, box.right, box.bottom)
-        cardFillPaint.color = if (darkSurface) {
-            Color.argb(22, 255, 255, 255)
-        } else {
-            Color.argb(14, 0, 0, 0)
-        }
-        cardStrokePaint.color = if (darkSurface) {
-            Color.argb(28, 255, 255, 255)
-        } else {
-            Color.argb(20, 0, 0, 0)
-        }
-        canvas.drawRoundRect(rectScratch, cornerR, cornerR, cardFillPaint)
-        canvas.drawRoundRect(rectScratch, cornerR, cornerR, cardStrokePaint)
-
         when (tile.content.kind) {
-            WidgetKind.BATTERY_RING -> drawBatteryRingCard(canvas, tile, box, darkSurface)
-            WidgetKind.WEATHER_HERO -> drawWeatherHeroCard(canvas, tile, box, darkSurface)
-            else -> drawStandardComplicationCard(canvas, tile, box, darkSurface)
+            WidgetKind.WEATHER_HERO -> drawWeatherCard(canvas, tile, box, now, heroSquare, nightRed, darkSurface)
+            WidgetKind.BATTERY_RING -> drawBatteryCard(canvas, tile, box, heroSquare, nightRed, darkSurface)
+            else -> drawComplicationCard(canvas, tile, box, heroSquare, nightRed, darkSurface)
         }
     }
 
     /**
-     * Apple Watch / iOS StandBy Circular Battery Complication:
-     * Vivid progress ring + centered phone/bolt glyph on the left, large tabular
-     * percentage and charging label on the right.
+     * 1:1 iOS StandBy Weather Card:
+     * Atmospheric sky gradient (condition + day/night aware), soft radial sun glow,
+     * filled vector iOS location pointer, oversized crisp temperature, and SF-Symbols weather graphic.
      */
-    private fun drawBatteryRingCard(
+    private fun drawWeatherCard(
         canvas: Canvas,
         tile: WidgetTile,
         box: FaceBox,
+        now: Calendar,
+        heroSquare: Boolean,
+        nightRed: Boolean,
         darkSurface: Boolean,
     ) {
         val c = tile.content
-        val progress = (c.progress ?: 0f).coerceIn(0f, 1f)
-        val nightMode = theme.brightnessProfile == BrightnessProfile.NIGHT
+        val cornerR = if (heroSquare) min(box.width, box.height) * 0.175f else min(box.height * 0.24f, box.width * 0.10f)
+        val hour24 = now.get(Calendar.HOUR_OF_DAY)
+        val isNightSky = hour24 >= 19 || hour24 < 6
 
+        val (skyTop, skyBot) = weatherSkyGradient(c.glyph, isNightSky, nightRed, darkSurface)
+        drawGlassCard(canvas, box, cornerR, skyTop, skyBot, nightRed, darkSurface, skyCard = !nightRed && darkSurface)
+
+        // Subtle atmospheric sun/moon glow inside the card clipped to rounded corners
+        if (!nightRed && darkSurface && (c.glyph == WidgetGlyph.SUN || c.glyph == WidgetGlyph.PARTLY_CLOUDY)) {
+            canvas.save()
+            clipPath.reset()
+            rectScratch.set(box.left, box.top, box.right, box.bottom)
+            clipPath.addRoundRect(rectScratch, cornerR, cornerR, Path.Direction.CW)
+            canvas.clipPath(clipPath)
+            val glowColor = if (isNightSky) Color.parseColor("#A5C8FF") else Color.parseColor("#FFF4D4")
+            val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                shader = RadialGradient(
+                    box.right - box.width * 0.14f,
+                    box.top + box.height * 0.16f,
+                    max(box.width, box.height) * 0.54f,
+                    intArrayOf(withAlpha(glowColor, 0.26f), withAlpha(glowColor, 0.06f), Color.TRANSPARENT),
+                    floatArrayOf(0f, 0.52f, 1f),
+                    Shader.TileMode.CLAMP,
+                )
+            }
+            canvas.drawRect(rectScratch, glowPaint)
+            canvas.restore()
+        }
+
+        val parts = c.secondary?.split(" · ")?.filter { it.isNotBlank() }.orEmpty()
+        val cityLabel = parts.firstOrNull() ?: ""
+        val condLabel = if (parts.size >= 2) parts.drop(1).joinToString(" · ") else ""
+
+        val onSkyPrimary = if (nightRed) Color.parseColor("#FF3B30") else if (darkSurface) Color.WHITE else colors.primary
+        val onSkySecondary = if (nightRed) Color.argb(185, 255, 69, 58) else if (darkSurface) Color.argb(215, 236, 244, 255) else colors.secondary
+        val iconPrimary = when {
+            nightRed -> Color.parseColor("#FF453A")
+            c.glyph == WidgetGlyph.SUN || c.glyph == WidgetGlyph.THUNDER -> Color.parseColor("#FFD60A")
+            c.glyph == WidgetGlyph.RAIN || c.glyph == WidgetGlyph.SNOW -> Color.parseColor("#70D7FF")
+            else -> Color.WHITE
+        }
+        val iconSecondary = if (nightRed) Color.parseColor("#FF453A") else Color.WHITE
+
+        if (heroSquare) {
+            val padX = box.width * 0.095f
+            val padY = box.height * 0.090f
+            val innerLeft = box.left + padX
+            val innerRight = box.right - padX
+            val avail = (innerRight - innerLeft).coerceAtLeast(1f)
+
+            // Top row: City + filled vector location arrow on left; subtle weekday + day on right
+            val citySize = box.height * 0.088f
+            widgetSecondaryPaint.typeface = roundedExtraBold
+            widgetSecondaryPaint.textSize = citySize
+            widgetSecondaryPaint.color = onSkyPrimary
+
+            val dateBadge = "${weekdayFormatter.format(now.time).uppercase(Locale.getDefault())} ${now.get(Calendar.DAY_OF_MONTH)}"
+            dateHeaderPaint.typeface = roundedBold
+            dateHeaderPaint.textSize = box.height * 0.062f
+            dateHeaderPaint.textAlign = Paint.Align.RIGHT
+            dateHeaderPaint.color = withAlpha(onSkySecondary, 0.80f)
+            val dateW = dateHeaderPaint.measureText(dateBadge)
+            val topBaseline = box.top + padY - widgetSecondaryPaint.ascent()
+            canvas.drawText(dateBadge, innerRight, topBaseline, dateHeaderPaint)
+            dateHeaderPaint.textAlign = Paint.Align.LEFT
+
+            if (cityLabel.isNotEmpty()) {
+                val arrowSize = citySize * 0.64f
+                val maxCityW = (avail - dateW - arrowSize - padX * 0.45f).coerceAtLeast(avail * 0.35f)
+                val clippedCity = TextUtils.ellipsize(cityLabel, widgetSecondaryPaint, maxCityW, TextUtils.TruncateAt.END).toString()
+                canvas.drawText(clippedCity, innerLeft, topBaseline, widgetSecondaryPaint)
+                if (parts.size >= 2) {
+                    val arrowX = innerLeft + widgetSecondaryPaint.measureText(clippedCity) + citySize * 0.22f
+                    val arrowY = topBaseline - arrowSize * 0.92f
+                    WidgetIcons.drawLocationArrow(canvas, arrowX, arrowY, arrowSize, onSkyPrimary)
+                }
+            }
+
+            // Middle: Massive crisp iOS temperature on left + rich SF-Symbols illustration on right
+            val tempSize = box.height * 0.34f
+            numeralFillPaint.shader = null
+            numeralFillPaint.alpha = 255
+            numeralFillPaint.xfermode = null
+            numeralFillPaint.typeface = roundedBold
+            numeralFillPaint.textSize = tempSize
+            val maxTempW = avail * 0.60f
+            val measuredTempW = numeralFillPaint.measureText(c.primary)
+            val finalTempSize = tempSize * ClockTypography.shrinkFactor(measuredTempW, maxTempW)
+            numeralFillPaint.textSize = finalTempSize
+            numeralFillPaint.getTextBounds(c.primary, 0, c.primary.length, textBounds)
+            numeralFillPaint.color = onSkyPrimary
+            val tempCy = box.top + box.height * 0.48f
+            canvas.drawText(c.primary, innerLeft - textBounds.left, tempCy - textBounds.exactCenterY(), numeralFillPaint)
+
+            val iconSize = min(box.height * 0.32f, box.width * 0.32f)
+            WidgetIcons.draw(
+                canvas = canvas,
+                glyph = c.glyph,
+                x = innerRight - iconSize,
+                y = tempCy - iconSize * 0.52f,
+                size = iconSize,
+                color = iconPrimary,
+                secondaryColor = iconSecondary,
+                nightRed = nightRed,
+            )
+
+            // Bottom: Bold condition label anchored gracefully at bottom-left
+            if (condLabel.isNotEmpty()) {
+                widgetSecondaryPaint.typeface = roundedBold
+                widgetSecondaryPaint.textSize = box.height * 0.086f
+                widgetSecondaryPaint.color = onSkyPrimary
+                val clippedCond = TextUtils.ellipsize(condLabel, widgetSecondaryPaint, avail, TextUtils.TruncateAt.END).toString()
+                canvas.drawText(clippedCond, innerLeft, box.bottom - padY - widgetSecondaryPaint.descent(), widgetSecondaryPaint)
+            }
+            return
+        }
+
+        // Medium / Compact Horizontal Weather Card (2-up or 3-up stack)
+        val padX = box.width * 0.075f
+        val padY = box.height * 0.14f
+        val innerLeft = box.left + padX
+        val innerRight = box.right - padX
+        val avail = (innerRight - innerLeft).coerceAtLeast(1f)
+
+        val iconSize = min(box.height * 0.48f, box.width * 0.22f)
+        WidgetIcons.draw(
+            canvas = canvas,
+            glyph = c.glyph,
+            x = innerRight - iconSize,
+            y = box.top + padY * 0.85f,
+            size = iconSize,
+            color = iconPrimary,
+            secondaryColor = iconSecondary,
+            nightRed = nightRed,
+        )
+
+        if (cityLabel.isNotEmpty()) {
+            val citySize = box.height * 0.195f
+            widgetSecondaryPaint.typeface = roundedExtraBold
+            widgetSecondaryPaint.textSize = citySize
+            widgetSecondaryPaint.color = onSkyPrimary
+            val arrowSize = citySize * 0.65f
+            val clippedCity = TextUtils.ellipsize(cityLabel, widgetSecondaryPaint, avail - iconSize - arrowSize - padX * 0.5f, TextUtils.TruncateAt.END).toString()
+            val y = box.top + padY - widgetSecondaryPaint.ascent()
+            canvas.drawText(clippedCity, innerLeft, y, widgetSecondaryPaint)
+            if (parts.size >= 2) {
+                val ax = innerLeft + widgetSecondaryPaint.measureText(clippedCity) + citySize * 0.22f
+                WidgetIcons.drawLocationArrow(canvas, ax, y - arrowSize * 0.90f, arrowSize, onSkyPrimary)
+            }
+        }
+
+        // Large temperature bottom-left
+        numeralFillPaint.shader = null
+        numeralFillPaint.alpha = 255
+        numeralFillPaint.xfermode = null
+        numeralFillPaint.typeface = roundedBold
+        var tempSize = box.height * 0.48f
+        numeralFillPaint.textSize = tempSize
+        tempSize *= ClockTypography.shrinkFactor(numeralFillPaint.measureText(c.primary), avail * 0.56f)
+        numeralFillPaint.textSize = tempSize
+        numeralFillPaint.color = onSkyPrimary
+        canvas.drawText(c.primary, innerLeft, box.bottom - padY * 0.85f, numeralFillPaint)
+
+        if (condLabel.isNotEmpty()) {
+            widgetSecondaryPaint.typeface = roundedBold
+            widgetSecondaryPaint.textSize = box.height * 0.18f
+            widgetSecondaryPaint.color = onSkySecondary
+            val condMax = (avail - numeralFillPaint.measureText(c.primary) - padX * 0.5f).coerceAtLeast(1f)
+            val clipped = TextUtils.ellipsize(condLabel, widgetSecondaryPaint, condMax, TextUtils.TruncateAt.END).toString()
+            val cw = widgetSecondaryPaint.measureText(clipped)
+            canvas.drawText(clipped, innerRight - cw, box.bottom - padY * 0.95f, widgetSecondaryPaint)
+        }
+    }
+
+    /**
+     * 1:1 Apple Watch / iOS StandBy Circular Battery Card:
+     * Thick glowing emerald progress ring + centered rounded phone & charging bolt.
+     */
+    private fun drawBatteryCard(
+        canvas: Canvas,
+        tile: WidgetTile,
+        box: FaceBox,
+        heroSquare: Boolean,
+        nightRed: Boolean,
+        darkSurface: Boolean,
+    ) {
+        val c = tile.content
+        val cornerR = if (heroSquare) min(box.width, box.height) * 0.175f else min(box.height * 0.24f, box.width * 0.10f)
+        val topFill = if (nightRed) Color.parseColor("#0D0202") else if (darkSurface) Color.parseColor("#1D1E24") else Color.parseColor("#F5F6F9")
+        val botFill = if (nightRed) Color.BLACK else if (darkSurface) Color.parseColor("#101116") else Color.parseColor("#E6E8EF")
+        drawGlassCard(canvas, box, cornerR, topFill, botFill, nightRed, darkSurface)
+
+        val progress = (c.progress ?: 0f).coerceIn(0f, 1f)
         val ringColor = when {
-            nightMode -> colors.accent
+            nightRed -> Color.parseColor("#FF3B30")
             !darkSurface -> colors.accent
             progress <= 0.12f -> Color.parseColor("#FF453A")
             progress <= 0.22f -> Color.parseColor("#FFD60A")
             else -> Color.parseColor("#30D158")
         }
+        val ringBright = shiftLuminance(ringColor, 0.16f)
+        val primaryText = if (nightRed) Color.parseColor("#FF3B30") else if (darkSurface) Color.WHITE else colors.primary
 
-        val padX = box.height * 0.18f
-        val ringDiameter = min(box.height * 0.68f, box.width * 0.34f)
-        val ringRadius = ringDiameter * 0.5f
-        val ringCx = box.left + padX + ringRadius
-        val ringCy = box.top + box.height * 0.5f
-        val ringStroke = (ringRadius * 0.23f).coerceAtLeast(2.2f)
+        fun drawBatteryRing(cx: Float, cy: Float, diameter: Float) {
+            val radius = diameter * 0.5f
+            val stroke = (radius * 0.22f).coerceAtLeast(3.0f)
+            val r = radius - stroke * 0.5f
 
-        ringPaint.strokeWidth = ringStroke
-        ringPaint.color = withAlpha(ringColor, if (darkSurface) 0.22f else 0.18f)
-        canvas.drawCircle(ringCx, ringCy, ringRadius - ringStroke * 0.5f, ringPaint)
+            ringPaint.shader = null
+            ringPaint.strokeWidth = stroke
+            ringPaint.color = withAlpha(ringColor, if (darkSurface) 0.20f else 0.18f)
+            canvas.drawCircle(cx, cy, r, ringPaint)
 
-        val r = ringRadius - ringStroke * 0.5f
-        rectScratch.set(ringCx - r, ringCy - r, ringCx + r, ringCy + r)
-        ringPaint.color = ringColor
-        val sweep = (progress * 360f).coerceAtLeast(if (progress > 0f) 6f else 0f)
-        canvas.drawArc(rectScratch, -90f, sweep, false, ringPaint)
+            rectScratch.set(cx - r, cy - r, cx + r, cy + r)
+            ringPaint.color = ringColor
+            val sweep = (progress * 360f).coerceAtLeast(if (progress > 0f) 8f else 0f)
+            if (!nightRed) {
+                canvas.save()
+                canvas.rotate(-90f, cx, cy)
+                ringPaint.shader = SweepGradient(cx, cy, intArrayOf(ringColor, ringBright, ringColor), floatArrayOf(0f, 0.55f, 1f))
+                canvas.drawArc(rectScratch, 0f, sweep, false, ringPaint)
+                ringPaint.shader = null
+                canvas.restore()
+            } else {
+                canvas.drawArc(rectScratch, -90f, sweep, false, ringPaint)
+            }
 
-        // Inner phone silhouette + charging bolt
-        val phoneW = ringRadius * 0.54f
-        val phoneH = ringRadius * 0.86f
-        rectScratch.set(
-            ringCx - phoneW * 0.5f,
-            ringCy - phoneH * 0.5f,
-            ringCx + phoneW * 0.5f,
-            ringCy + phoneH * 0.5f,
-        )
-        tickPaint.strokeWidth = (ringStroke * 0.34f).coerceAtLeast(1.4f)
-        tickPaint.color = withAlpha(colors.primary, 0.88f)
-        canvas.drawRoundRect(rectScratch, phoneW * 0.24f, phoneW * 0.24f, tickPaint)
+            // Crisp rounded phone outline inside ring
+            val phoneW = radius * 0.48f
+            val phoneH = radius * 0.78f
+            innerScratch.set(cx - phoneW * 0.5f, cy - phoneH * 0.5f, cx + phoneW * 0.5f, cy + phoneH * 0.5f)
+            dialStrokePaint.strokeWidth = (stroke * 0.30f).coerceAtLeast(1.8f)
+            dialStrokePaint.color = withAlpha(primaryText, 0.90f)
+            canvas.drawRoundRect(innerScratch, phoneW * 0.24f, phoneW * 0.24f, dialStrokePaint)
 
-        if (c.charging) {
-            val boltSize = ringRadius * 0.58f
-            WidgetIcons.draw(
-                canvas,
-                WidgetGlyph.BOLT,
-                ringCx - boltSize * 0.5f,
-                ringCy - boltSize * 0.5f,
-                boltSize,
-                ringColor,
-            )
+            if (c.charging) {
+                val boltSize = radius * 0.52f
+                WidgetIcons.draw(
+                    canvas = canvas,
+                    glyph = WidgetGlyph.BOLT,
+                    x = cx - boltSize * 0.5f,
+                    y = cy - boltSize * 0.5f,
+                    size = boltSize,
+                    color = ringBright,
+                    nightRed = nightRed,
+                )
+            }
         }
 
-        val textLeft = ringCx + ringRadius + padX * 0.95f
-        val avail = (box.right - padX - textLeft).coerceAtLeast(1f)
+        if (heroSquare) {
+            val ringD = min(box.width, box.height) * 0.48f
+            val ringCx = box.centerX
+            val ringCy = box.top + box.height * 0.39f
+            drawBatteryRing(ringCx, ringCy, ringD)
 
-        widgetPrimaryPaint.typeface = boldSans
-        widgetPrimaryPaint.color = colors.primary
+            // Large centered percentage + status below ring
+            numeralFillPaint.shader = null
+            numeralFillPaint.alpha = 255
+            numeralFillPaint.typeface = roundedExtraBold
+            numeralFillPaint.textSize = box.height * 0.165f
+            numeralFillPaint.color = primaryText
+            numeralFillPaint.getTextBounds(c.primary, 0, c.primary.length, textBounds)
+            val pctY = box.top + box.height * 0.77f
+            canvas.drawText(c.primary, box.centerX - textBounds.exactCenterX(), pctY - textBounds.exactCenterY(), numeralFillPaint)
+
+            val sub = c.secondary?.takeIf { it.isNotBlank() }
+            if (sub != null) {
+                dateHeaderPaint.typeface = roundedBold
+                dateHeaderPaint.textAlign = Paint.Align.CENTER
+                dateHeaderPaint.textSize = box.height * 0.068f
+                dateHeaderPaint.color = if (c.charging) ringBright else withAlpha(primaryText, 0.65f)
+                canvas.drawText(sub, box.centerX, box.top + box.height * 0.90f, dateHeaderPaint)
+                dateHeaderPaint.textAlign = Paint.Align.LEFT
+            }
+            return
+        }
+
+        // Medium / Compact Horizontal Battery Card
+        val padX = box.width * 0.075f
+        val ringD = min(box.height * 0.68f, box.width * 0.30f)
+        val ringCx = box.left + padX + ringD * 0.5f
+        val ringCy = box.centerY
+        drawBatteryRing(ringCx, ringCy, ringD)
+
+        val textLeft = ringCx + ringD * 0.5f + padX * 0.85f
+        val avail = (box.right - padX - textLeft).coerceAtLeast(1f)
+        widgetPrimaryPaint.typeface = roundedExtraBold
+        widgetPrimaryPaint.color = primaryText
         var numSize = box.height * 0.38f
         widgetPrimaryPaint.textSize = numSize
         numSize *= ClockTypography.shrinkFactor(widgetPrimaryPaint.measureText(c.primary), avail)
@@ -890,230 +1705,376 @@ class ClockView @JvmOverloads constructor(
 
         val sub = c.secondary?.takeIf { it.isNotBlank() }
         if (sub != null) {
-            canvas.drawText(c.primary, textLeft, box.top + box.height * 0.52f, widgetPrimaryPaint)
-            widgetSecondaryPaint.typeface = mediumSans
-            widgetSecondaryPaint.color = if (c.charging) ringColor else withAlpha(colors.secondary, 0.78f)
-            widgetSecondaryPaint.textSize = box.height * 0.17f
+            canvas.drawText(c.primary, textLeft, box.top + box.height * 0.53f, widgetPrimaryPaint)
+            widgetSecondaryPaint.typeface = roundedBold
+            widgetSecondaryPaint.color = if (c.charging) ringBright else withAlpha(primaryText, 0.62f)
+            widgetSecondaryPaint.textSize = box.height * 0.18f
             val clipped = TextUtils.ellipsize(sub, widgetSecondaryPaint, avail, TextUtils.TruncateAt.END).toString()
-            canvas.drawText(clipped, textLeft, box.top + box.height * 0.76f, widgetSecondaryPaint)
+            canvas.drawText(clipped, textLeft, box.top + box.height * 0.77f, widgetSecondaryPaint)
         } else {
-            val y = box.top + (box.height - (widgetPrimaryPaint.ascent() + widgetPrimaryPaint.descent())) * 0.5f
+            val y = box.centerY - (widgetPrimaryPaint.ascent() + widgetPrimaryPaint.descent()) * 0.5f
             canvas.drawText(c.primary, textLeft, y, widgetPrimaryPaint)
         }
     }
 
-    /**
-     * iOS StandBy Weather Hero Card:
-     * Sky-cyan/accent location header on top, oversized rounded temperature numeral,
-     * and crisp multi-tone weather glyph + condition.
-     */
-    private fun drawWeatherHeroCard(
+    /** Alarm / Media / Notification Liquid Glass Card. */
+    private fun drawComplicationCard(
         canvas: Canvas,
         tile: WidgetTile,
         box: FaceBox,
+        heroSquare: Boolean,
+        nightRed: Boolean,
         darkSurface: Boolean,
     ) {
         val c = tile.content
-        val padX = box.height * 0.18f
-        val innerLeft = box.left + padX
-        val innerRight = box.right - padX
-        val avail = (innerRight - innerLeft).coerceAtLeast(1f)
+        val cornerR = if (heroSquare) min(box.width, box.height) * 0.175f else min(box.height * 0.24f, box.width * 0.10f)
+        val topFill = if (nightRed) Color.parseColor("#0D0202") else if (darkSurface) Color.parseColor("#1D1E24") else Color.parseColor("#F5F6F9")
+        val botFill = if (nightRed) Color.BLACK else if (darkSurface) Color.parseColor("#101116") else Color.parseColor("#E6E8EF")
+        drawGlassCard(canvas, box, cornerR, topFill, botFill, nightRed, darkSurface)
 
-        val parts = c.secondary?.split(" · ")?.filter { it.isNotBlank() }.orEmpty()
-        val headerLabel = parts.firstOrNull() ?: ""
-        val condLabel = if (parts.size >= 2) parts.drop(1).joinToString(" · ") else ""
+        val badgeTint = glyphAccentColor(c, nightRed, darkSurface)
+        val primaryText = if (nightRed) Color.parseColor("#FF3B30") else if (darkSurface) Color.WHITE else colors.primary
 
-        val nightMode = theme.brightnessProfile == BrightnessProfile.NIGHT
-        val cityColor = when {
-            nightMode -> colors.accent
-            darkSurface -> Color.parseColor("#5AC8FA")
-            else -> colors.accent
+        if (heroSquare) {
+            val padX = box.width * 0.095f
+            val padY = box.height * 0.095f
+            val innerLeft = box.left + padX
+            val avail = (box.right - padX - innerLeft).coerceAtLeast(1f)
+
+            val badgeD = box.height * 0.22f
+            if (c.glyph != WidgetGlyph.NONE) {
+                cardFillPaint.shader = null
+                cardFillPaint.color = withAlpha(badgeTint, if (darkSurface) 0.22f else 0.15f)
+                canvas.drawCircle(innerLeft + badgeD * 0.5f, box.top + padY + badgeD * 0.5f, badgeD * 0.5f, cardFillPaint)
+                val gSize = badgeD * 0.54f
+                WidgetIcons.draw(
+                    canvas, c.glyph,
+                    innerLeft + (badgeD - gSize) * 0.5f,
+                    box.top + padY + (badgeD - gSize) * 0.5f,
+                    gSize, badgeTint, nightRed = nightRed,
+                )
+            }
+
+            val sub = c.secondary?.takeIf { it.isNotBlank() }
+            if (sub != null) {
+                widgetSecondaryPaint.typeface = roundedExtraBold
+                widgetSecondaryPaint.textSize = box.height * 0.075f
+                widgetSecondaryPaint.color = badgeTint
+                val over = TextUtils.ellipsize(sub, widgetSecondaryPaint, avail, TextUtils.TruncateAt.END).toString()
+                canvas.drawText(over, innerLeft, box.top + box.height * 0.52f, widgetSecondaryPaint)
+            }
+
+            widgetPrimaryPaint.typeface = roundedExtraBold
+            widgetPrimaryPaint.color = primaryText
+            var pSize = box.height * (if (c.kind == WidgetKind.ALARM_BADGE) 0.21f else 0.135f)
+            widgetPrimaryPaint.textSize = pSize
+            pSize *= ClockTypography.shrinkFactor(widgetPrimaryPaint.measureText(c.primary), avail)
+            widgetPrimaryPaint.textSize = pSize
+            val mainLine = TextUtils.ellipsize(c.primary, widgetPrimaryPaint, avail, TextUtils.TruncateAt.END).toString()
+            canvas.drawText(mainLine, innerLeft, box.top + box.height * 0.74f, widgetPrimaryPaint)
+            return
         }
 
-        // Top location header ("北京 ↗" or condition)
-        if (headerLabel.isNotEmpty()) {
-            widgetSecondaryPaint.typeface = boldSans
-            widgetSecondaryPaint.color = cityColor
-            widgetSecondaryPaint.textSize = box.height * 0.18f
-            val headerWithArrow = if (parts.size >= 2) "$headerLabel ↗" else headerLabel
-            val clippedHeader = TextUtils.ellipsize(
-                headerWithArrow,
-                widgetSecondaryPaint,
-                avail * 0.72f,
-                TextUtils.TruncateAt.END,
-            ).toString()
-            canvas.drawText(clippedHeader, innerLeft, box.top + box.height * 0.29f, widgetSecondaryPaint)
-        }
-
-        // Weather icon in top-right / right-center
-        val iconSize = min(box.height * 0.42f, box.width * 0.22f)
-        val iconPrimary = when {
-            nightMode -> colors.accent
-            c.glyph == WidgetGlyph.SUN || c.glyph == WidgetGlyph.THUNDER -> Color.parseColor("#FFD60A")
-            c.glyph == WidgetGlyph.RAIN || c.glyph == WidgetGlyph.SNOW -> Color.parseColor("#64D2FF")
-            else -> colors.primary
-        }
-        val iconSecondary = if (nightMode) colors.secondary else withAlpha(colors.primary, 0.85f)
-        WidgetIcons.draw(
-            canvas = canvas,
-            glyph = c.glyph,
-            x = innerRight - iconSize,
-            y = box.top + box.height * 0.16f,
-            size = iconSize,
-            color = iconPrimary,
-            secondaryColor = iconSecondary,
-        )
-
-        // Oversized temperature on bottom-left
-        widgetPrimaryPaint.typeface = boldSans
-        widgetPrimaryPaint.color = colors.primary
-        var tempSize = box.height * 0.46f
-        widgetPrimaryPaint.textSize = tempSize
-        val tempMaxW = (avail - iconSize - padX * 0.4f).coerceAtLeast(avail * 0.45f)
-        tempSize *= ClockTypography.shrinkFactor(widgetPrimaryPaint.measureText(c.primary), tempMaxW)
-        widgetPrimaryPaint.textSize = tempSize
-        canvas.drawText(c.primary, innerLeft, box.top + box.height * 0.81f, widgetPrimaryPaint)
-
-        // Condition subtitle aligned bottom-right
-        if (condLabel.isNotEmpty()) {
-            widgetSecondaryPaint.typeface = mediumSans
-            widgetSecondaryPaint.color = withAlpha(colors.secondary, 0.86f)
-            widgetSecondaryPaint.textSize = box.height * 0.165f
-            val condMax = (avail - widgetPrimaryPaint.measureText(c.primary) - padX * 0.6f).coerceAtLeast(1f)
-            val clippedCond = TextUtils.ellipsize(
-                condLabel,
-                widgetSecondaryPaint,
-                condMax,
-                TextUtils.TruncateAt.END,
-            ).toString()
-            val cw = widgetSecondaryPaint.measureText(clippedCond)
-            canvas.drawText(clippedCond, innerRight - cw, box.top + box.height * 0.80f, widgetSecondaryPaint)
-        }
-    }
-
-    private fun drawStandardComplicationCard(
-        canvas: Canvas,
-        tile: WidgetTile,
-        box: FaceBox,
-        darkSurface: Boolean,
-    ) {
-        val c = tile.content
-        val nightMode = theme.brightnessProfile == BrightnessProfile.NIGHT
-        val badgeTint = when {
-            nightMode -> colors.accent
-            !darkSurface -> colors.accent
-            c.kind == WidgetKind.ALARM_BADGE -> Color.parseColor("#FF9F0A")
-            c.kind == WidgetKind.MEDIA_NOW -> Color.parseColor("#FF375F")
-            else -> colors.accent
-        }
-
-        val padX = box.height * 0.18f
-        val badgeSize = min(box.height * 0.50f, box.width * 0.24f)
+        // Medium / Compact horizontal layout
+        val padX = box.width * 0.075f
+        val badgeSize = min(box.height * 0.52f, box.width * 0.22f)
         val badgeCx = box.left + padX + badgeSize * 0.5f
-        val badgeCy = box.top + box.height * 0.5f
+        val badgeCy = box.centerY
 
         if (c.glyph != WidgetGlyph.NONE) {
-            cardFillPaint.color = withAlpha(badgeTint, if (darkSurface) 0.20f else 0.14f)
+            cardFillPaint.shader = null
+            cardFillPaint.color = withAlpha(badgeTint, if (darkSurface) 0.22f else 0.14f)
             canvas.drawCircle(badgeCx, badgeCy, badgeSize * 0.5f, cardFillPaint)
-            val glyphSize = badgeSize * 0.56f
+            val glyphSize = badgeSize * 0.54f
             WidgetIcons.draw(
-                canvas,
-                c.glyph,
+                canvas, c.glyph,
                 badgeCx - glyphSize * 0.5f,
                 badgeCy - glyphSize * 0.5f,
-                glyphSize,
-                badgeTint,
+                glyphSize, badgeTint, nightRed = nightRed,
             )
         }
 
-        val textLeft = if (c.glyph == WidgetGlyph.NONE) {
-            box.left + padX
-        } else {
-            badgeCx + badgeSize * 0.5f + padX * 0.85f
-        }
+        val textLeft = if (c.glyph == WidgetGlyph.NONE) box.left + padX else badgeCx + badgeSize * 0.5f + padX * 0.75f
         val avail = (box.right - padX - textLeft).coerceAtLeast(1f)
         val hasSecondary = !c.secondary.isNullOrBlank()
 
         if (hasSecondary) {
-            // Put the category/app/artist header on top in accent tint, primary content below
-            widgetSecondaryPaint.typeface = boldSans
+            widgetSecondaryPaint.typeface = roundedExtraBold
             widgetSecondaryPaint.color = badgeTint
-            widgetSecondaryPaint.textSize = box.height * 0.165f
-            val overline = TextUtils.ellipsize(
-                c.secondary.orEmpty(),
-                widgetSecondaryPaint,
-                avail,
-                TextUtils.TruncateAt.END,
-            ).toString()
-            canvas.drawText(overline, textLeft, box.top + box.height * 0.36f, widgetSecondaryPaint)
+            widgetSecondaryPaint.textSize = box.height * 0.175f
+            val overline = TextUtils.ellipsize(c.secondary.orEmpty(), widgetSecondaryPaint, avail, TextUtils.TruncateAt.END).toString()
+            canvas.drawText(overline, textLeft, box.top + box.height * 0.37f, widgetSecondaryPaint)
 
-            widgetPrimaryPaint.typeface = boldSans
-            widgetPrimaryPaint.color = colors.primary
-            widgetPrimaryPaint.textSize = box.height * (if (c.kind == WidgetKind.ALARM_BADGE) 0.34f else 0.26f)
-            val mainLine = TextUtils.ellipsize(
-                c.primary,
-                widgetPrimaryPaint,
-                avail,
-                TextUtils.TruncateAt.END,
-            ).toString()
-            canvas.drawText(mainLine, textLeft, box.top + box.height * 0.72f, widgetPrimaryPaint)
+            widgetPrimaryPaint.typeface = roundedExtraBold
+            widgetPrimaryPaint.color = primaryText
+            widgetPrimaryPaint.textSize = box.height * (if (c.kind == WidgetKind.ALARM_BADGE) 0.35f else 0.27f)
+            val mainLine = TextUtils.ellipsize(c.primary, widgetPrimaryPaint, avail, TextUtils.TruncateAt.END).toString()
+            canvas.drawText(mainLine, textLeft, box.top + box.height * 0.73f, widgetPrimaryPaint)
         } else {
-            widgetPrimaryPaint.typeface = boldSans
-            widgetPrimaryPaint.color = colors.primary
-            widgetPrimaryPaint.textSize = box.height * 0.31f
-            val mainLine = TextUtils.ellipsize(
-                c.primary,
-                widgetPrimaryPaint,
-                avail,
-                TextUtils.TruncateAt.END,
-            ).toString()
-            val y = box.top + (box.height - (widgetPrimaryPaint.ascent() + widgetPrimaryPaint.descent())) * 0.5f
+            widgetPrimaryPaint.typeface = roundedExtraBold
+            widgetPrimaryPaint.color = primaryText
+            widgetPrimaryPaint.textSize = box.height * 0.32f
+            val mainLine = TextUtils.ellipsize(c.primary, widgetPrimaryPaint, avail, TextUtils.TruncateAt.END).toString()
+            val y = box.centerY - (widgetPrimaryPaint.ascent() + widgetPrimaryPaint.descent()) * 0.5f
             canvas.drawText(mainLine, textLeft, y, widgetPrimaryPaint)
         }
     }
 
-    private fun drawCompactFooterTile(canvas: Canvas, tile: WidgetTile, box: FaceBox) {
+    private fun drawOptionalFooterTile(
+        canvas: Canvas,
+        layout: FaceLayout,
+        leftWidgets: List<WidgetTile>,
+        nightRed: Boolean,
+        darkSurface: Boolean,
+    ) {
+        val box = layout.leftTile ?: return
+        val tile = leftWidgets.firstOrNull() ?: return
         val c = tile.content
-        val iconSize = box.height * 0.54f
-        val cy = box.top + box.height * 0.5f
-        var textLeft = box.left + box.height * 0.2f
+        val iconSize = box.height * 0.56f
+        var textLeft = box.left + box.height * 0.22f
         if (c.glyph != WidgetGlyph.NONE) {
             WidgetIcons.draw(
-                canvas,
-                c.glyph,
-                textLeft,
-                cy - iconSize * 0.5f,
-                iconSize,
-                colors.accent,
+                canvas, c.glyph,
+                textLeft, box.centerY - iconSize * 0.5f,
+                iconSize, glyphAccentColor(c, nightRed, darkSurface),
+                nightRed = nightRed,
             )
             textLeft += iconSize + box.height * 0.24f
         }
         val avail = (box.right - textLeft).coerceAtLeast(1f)
         val combined = if (c.secondary.isNullOrBlank()) c.primary else "${c.primary} · ${c.secondary}"
-        widgetPrimaryPaint.typeface = mediumSans
-        widgetPrimaryPaint.color = withAlpha(colors.primary, 0.88f)
-        widgetPrimaryPaint.textSize = box.height * 0.44f
+        widgetPrimaryPaint.typeface = roundedBold
+        widgetPrimaryPaint.color = withAlpha(if (nightRed) Color.parseColor("#FF453A") else colors.primary, 0.85f)
+        widgetPrimaryPaint.textSize = box.height * 0.46f
         val line = TextUtils.ellipsize(combined, widgetPrimaryPaint, avail, TextUtils.TruncateAt.END).toString()
-        val y = box.top + (box.height - (widgetPrimaryPaint.ascent() + widgetPrimaryPaint.descent())) * 0.5f
+        val y = box.centerY - (widgetPrimaryPaint.ascent() + widgetPrimaryPaint.descent()) * 0.5f
         canvas.drawText(line, textLeft, y, widgetPrimaryPaint)
     }
 
-    private fun drawHint(canvas: Canvas, w: Float, h: Float) {
-        val hint = hintText
-        if (hint.isNullOrEmpty() || hintAlpha <= 0f) return
-        hintPaint.color = withAlpha(colors.secondary, 0.40f * hintAlpha)
-        hintPaint.textSize = h * 0.018f
-        hintPaint.typeface = mediumSans
-        canvas.drawText(hint, w * 0.5f, h * 0.955f, hintPaint)
+    // -------------------------------------------------------------------------
+    // Portrait Fallback (for portrait settings previews or vertical hold)
+    // -------------------------------------------------------------------------
+
+    private fun drawPortraitFace(
+        canvas: Canvas,
+        layout: FaceLayout,
+        now: Calendar,
+        rightWidgets: List<WidgetTile>,
+        leftWidgets: List<WidgetTile>,
+        nightRed: Boolean,
+        darkSurface: Boolean,
+    ) {
+        if (theme.faceStyle == FaceStyle.ANALOG) {
+            drawAnalogWatch(canvas, layout.clock, now, nightRed, darkSurface)
+        } else if (theme.faceStyle == FaceStyle.FLOAT) {
+            drawFloatFace(canvas, layout.clock, now, nightRed, darkSurface)
+        } else {
+            drawSolarGlassFace(canvas, layout.clock, now, nightRed, darkSurface)
+        }
+
+        val fullText = fullDateFormatter.format(now.time)
+        dateHeaderPaint.typeface = roundedBold
+        dateHeaderPaint.textAlign = Paint.Align.CENTER
+        var size = layout.date.height * 0.44f
+        dateHeaderPaint.textSize = size
+        size *= ClockTypography.shrinkFactor(dateHeaderPaint.measureText(fullText), layout.date.width)
+        dateHeaderPaint.textSize = size
+        dateHeaderPaint.color = if (nightRed) Color.parseColor("#FF453A") else colors.accent
+        val y = layout.date.centerY - (dateHeaderPaint.ascent() + dateHeaderPaint.descent()) * 0.5f
+        canvas.drawText(fullText, layout.date.centerX, y, dateHeaderPaint)
+        dateHeaderPaint.textAlign = Paint.Align.LEFT
+
+        val visible = rightWidgets.take(layout.rightTiles.size)
+        visible.forEachIndexed { i, tile ->
+            drawWidgetCard(canvas, tile, layout.rightTiles[i], now, heroSquare = false, nightRed = nightRed, darkSurface = darkSurface)
+        }
+        drawOptionalFooterTile(canvas, layout, leftWidgets, nightRed, darkSurface)
     }
+
+    // -------------------------------------------------------------------------
+    // Liquid Glass Card Surface + Specular Directional Rim Helper
+    // -------------------------------------------------------------------------
+
+    private fun drawGlassCard(
+        canvas: Canvas,
+        box: FaceBox,
+        cornerR: Float,
+        topColor: Int,
+        bottomColor: Int,
+        nightRed: Boolean,
+        darkSurface: Boolean,
+        skyCard: Boolean = false,
+    ) {
+        rectScratch.set(box.left, box.top, box.right, box.bottom)
+        cardFillPaint.shader = LinearGradient(box.left, box.top, box.left, box.bottom, topColor, bottomColor, Shader.TileMode.CLAMP)
+        canvas.drawRoundRect(rectScratch, cornerR, cornerR, cardFillPaint)
+        cardFillPaint.shader = null
+
+        // Subtle top-edge Liquid Glass inner luminance sheen
+        if (darkSurface && !nightRed) {
+            canvas.save()
+            clipPath.reset()
+            clipPath.addRoundRect(rectScratch, cornerR, cornerR, Path.Direction.CW)
+            canvas.clipPath(clipPath)
+            val sheenH = box.height * 0.30f
+            cardHighlightPaint.shader = LinearGradient(
+                box.left, box.top, box.left, box.top + sheenH,
+                Color.argb(if (skyCard) 28 else 18, 255, 255, 255),
+                Color.TRANSPARENT,
+                Shader.TileMode.CLAMP,
+            )
+            canvas.drawRect(box.left, box.top, box.right, box.top + sheenH, cardHighlightPaint)
+            cardHighlightPaint.shader = null
+            canvas.restore()
+        }
+
+        // Directional Liquid Glass specular border (top-left bright catch -> soft middle -> subtle bottom-right)
+        val strokeW = (min(box.width, box.height) * 0.0032f).coerceIn(1.2f, 2.2f)
+        val half = strokeW * 0.5f
+        innerScratch.set(box.left + half, box.top + half, box.right - half, box.bottom - half)
+        cardRimPaint.strokeWidth = strokeW
+        cardRimPaint.shader = LinearGradient(
+            box.left, box.top, box.right, box.bottom,
+            intArrayOf(
+                when {
+                    nightRed -> Color.argb(72, 255, 69, 58)
+                    skyCard -> Color.argb(110, 255, 255, 255)
+                    darkSurface -> Color.argb(74, 255, 255, 255)
+                    else -> Color.argb(38, 0, 0, 0)
+                },
+                when {
+                    nightRed -> Color.argb(18, 255, 69, 58)
+                    skyCard -> Color.argb(24, 255, 255, 255)
+                    darkSurface -> Color.argb(14, 255, 255, 255)
+                    else -> Color.argb(10, 0, 0, 0)
+                },
+                when {
+                    nightRed -> Color.argb(44, 255, 69, 58)
+                    skyCard -> Color.argb(56, 255, 255, 255)
+                    darkSurface -> Color.argb(38, 255, 255, 255)
+                    else -> Color.argb(24, 0, 0, 0)
+                },
+            ),
+            floatArrayOf(0f, 0.5f, 1f),
+            Shader.TileMode.CLAMP,
+        )
+        canvas.drawRoundRect(innerScratch, (cornerR - half).coerceAtLeast(1f), (cornerR - half).coerceAtLeast(1f), cardRimPaint)
+        cardRimPaint.shader = null
+    }
+
+    private fun weatherSkyGradient(
+        glyph: WidgetGlyph,
+        nightSky: Boolean,
+        nightRed: Boolean,
+        darkSurface: Boolean,
+    ): Pair<Int, Int> {
+        if (nightRed) return Color.parseColor("#110202") to Color.BLACK
+        if (!darkSurface) return Color.parseColor("#E3EFFB") to Color.parseColor("#CBE0F6")
+        return when (glyph) {
+            WidgetGlyph.SUN -> if (nightSky) {
+                Color.parseColor("#0D1B3E") to Color.parseColor("#1E3C72")
+            } else {
+                Color.parseColor("#164A8A") to Color.parseColor("#4793DB")
+            }
+            WidgetGlyph.PARTLY_CLOUDY -> if (nightSky) {
+                Color.parseColor("#15233E") to Color.parseColor("#2A426B")
+            } else {
+                Color.parseColor("#21538C") to Color.parseColor("#548FC9")
+            }
+            WidgetGlyph.CLOUD -> Color.parseColor("#2B3B4E") to Color.parseColor("#4A5F78")
+            WidgetGlyph.RAIN, WidgetGlyph.THUNDER -> Color.parseColor("#192536") to Color.parseColor("#324761")
+            WidgetGlyph.SNOW, WidgetGlyph.FOG -> Color.parseColor("#334456") to Color.parseColor("#586F85")
+            else -> Color.parseColor("#1B4375") to Color.parseColor("#3A75B5")
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Transient Hint / Style-Switch Liquid Glass Pill
+    // -------------------------------------------------------------------------
+
+    private fun drawTransientIndicator(canvas: Canvas, w: Float, h: Float, nightRed: Boolean, darkSurface: Boolean) {
+        if (hintAlpha <= 0f) return
+        val banner = bannerText
+        if (!banner.isNullOrEmpty()) {
+            hintPaint.typeface = roundedBold
+            hintPaint.textSize = (h * 0.032f).coerceIn(14f, 40f)
+            val tw = hintPaint.measureText(banner)
+            val padX = hintPaint.textSize * 1.0f
+            val pillH = hintPaint.textSize * 2.0f
+            val pillW = tw + padX * 2f
+            val pillBox = FaceBox(w * 0.5f - pillW * 0.5f, h * 0.90f - pillH * 0.5f, w * 0.5f + pillW * 0.5f, h * 0.90f + pillH * 0.5f)
+            drawGlassCard(
+                canvas, pillBox, pillH * 0.5f,
+                if (nightRed) Color.argb(180, 35, 6, 6) else Color.argb(190, 28, 30, 36),
+                if (nightRed) Color.argb(195, 18, 2, 2) else Color.argb(210, 18, 19, 24),
+                nightRed, darkSurface,
+            )
+            hintPaint.color = withAlpha(if (nightRed) Color.parseColor("#FF453A") else Color.WHITE, 0.94f * hintAlpha)
+            val y = pillBox.centerY - (hintPaint.ascent() + hintPaint.descent()) * 0.5f
+            canvas.drawText(banner, pillBox.centerX, y, hintPaint)
+            return
+        }
+
+        val hint = hintText
+        if (hint.isNullOrEmpty()) return
+        hintPaint.typeface = roundedBold
+        hintPaint.color = withAlpha(if (nightRed) Color.parseColor("#FF453A") else colors.secondary, 0.52f * hintAlpha)
+        hintPaint.textSize = (h * 0.022f).coerceIn(11f, 28f)
+        canvas.drawText(hint, w * 0.5f, h * 0.962f, hintPaint)
+    }
+
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+
+    private fun drawCenteredTightText(
+        canvas: Canvas,
+        text: String,
+        cx: Float,
+        cy: Float,
+        paint: Paint,
+        topColor: Int,
+        bottomColor: Int,
+        inkHeight: Float,
+    ) {
+        paint.getTextBounds(text, 0, text.length, textBounds)
+        val x = cx - textBounds.exactCenterX()
+        val y = cy - textBounds.exactCenterY()
+        paint.alpha = 255
+        paint.xfermode = null
+        paint.shader = LinearGradient(cx, cy - inkHeight * 0.52f, cx, cy + inkHeight * 0.52f, topColor, bottomColor, Shader.TileMode.CLAMP)
+        canvas.drawText(text, x, y, paint)
+        paint.shader = null
+    }
+
+    private fun clockTypefaceForSplit(): Typeface = when (theme.font) {
+        FontChoice.ROUNDED -> roundedExtraBold
+        else -> LumaFonts.resolve(context, theme.font)
+    }
+
+    private fun glyphAccentColor(c: app.luma.standby.domain.widget.WidgetContent, nightRed: Boolean, darkSurface: Boolean): Int = when {
+        nightRed -> Color.parseColor("#FF453A")
+        !darkSurface -> colors.accent
+        c.kind == WidgetKind.BATTERY_RING -> Color.parseColor("#30D158")
+        c.kind == WidgetKind.ALARM_BADGE -> Color.parseColor("#FF9F0A")
+        c.kind == WidgetKind.MEDIA_NOW -> Color.parseColor("#FF375F")
+        c.glyph == WidgetGlyph.SUN || c.glyph == WidgetGlyph.THUNDER -> Color.parseColor("#FFD60A")
+        c.glyph == WidgetGlyph.RAIN || c.glyph == WidgetGlyph.SNOW -> Color.parseColor("#64D2FF")
+        else -> colors.accent
+    }
+
+    private fun vibrantGlowAccent(): Int =
+        if (isNearWhite(colors.accent)) Color.parseColor("#FF9F0A") else colors.accent
+
+    private fun vibrantGlowPrimary(): Int =
+        if (isNearWhite(colors.primary)) Color.parseColor("#FF453A") else colors.primary
+
+    private fun isNightRed(): Boolean = theme.brightnessProfile == BrightnessProfile.NIGHT
 
     override fun performClick(): Boolean {
         super.performClick()
         return true
     }
-
-    private fun typefaceFor(theme: LumaTheme): Typeface =
-        LumaFonts.resolve(context, theme.font)
 
     private fun driftFor(): Pair<Float, Float> {
         if (!burnInDrift) return Pair(0f, 0f)
@@ -1127,22 +2088,23 @@ class ClockView @JvmOverloads constructor(
         return SimpleDateFormat(pattern, locale)
     }
 
-    private fun buildWeekdayFormatter(): SimpleDateFormat {
-        val locale = Locale.getDefault()
-        return SimpleDateFormat("EEE", locale)
-    }
+    private fun buildWeekdayFormatter(): SimpleDateFormat =
+        SimpleDateFormat("EEE", Locale.getDefault())
 
-    private fun buildMonthFormatter(): SimpleDateFormat {
-        val locale = Locale.getDefault()
-        return SimpleDateFormat("MMM", locale)
-    }
+    private fun buildMonthFormatter(): SimpleDateFormat =
+        SimpleDateFormat("MMM", Locale.getDefault())
 
     private fun isDark(color: Int): Boolean {
         val r = Color.red(color) / 255f
         val g = Color.green(color) / 255f
         val b = Color.blue(color) / 255f
-        val luma = 0.2126f * r + 0.7152f * g + 0.0722f * b
-        return luma < 0.45f
+        return (0.2126f * r + 0.7152f * g + 0.0722f * b) < 0.45f
+    }
+
+    private fun isNearWhite(color: Int): Boolean {
+        val hsv = FloatArray(3)
+        Color.colorToHSV(color, hsv)
+        return hsv[1] < 0.14f && hsv[2] > 0.85f
     }
 
     private fun shiftLuminance(color: Int, delta: Float): Int {
@@ -1150,6 +2112,16 @@ class ClockView @JvmOverloads constructor(
         Color.colorToHSV(color, hsv)
         hsv[2] = (hsv[2] + delta).coerceIn(0f, 1f)
         return Color.HSVToColor(Color.alpha(color), hsv)
+    }
+
+    private fun blendColor(a: Int, b: Int, ratio: Float): Int {
+        val inv = 1f - ratio
+        return Color.argb(
+            (Color.alpha(a) * inv + Color.alpha(b) * ratio).toInt().coerceIn(0, 255),
+            (Color.red(a) * inv + Color.red(b) * ratio).toInt().coerceIn(0, 255),
+            (Color.green(a) * inv + Color.green(b) * ratio).toInt().coerceIn(0, 255),
+            (Color.blue(a) * inv + Color.blue(b) * ratio).toInt().coerceIn(0, 255),
+        )
     }
 
     private fun withExactAlpha(color: Int, alpha: Int): Int =
@@ -1187,5 +2159,6 @@ class ClockView @JvmOverloads constructor(
 
     private companion object {
         const val HINT_VISIBLE_MS = 4_000L
+        const val BANNER_VISIBLE_MS = 2_200L
     }
 }

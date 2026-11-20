@@ -1,3 +1,3 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources xmlns:tools="http://schemas.android.com/tools"
-    tools:keep="@font/oswald,@raw/oswald_ofl" />
+    tools:keep="@font/oswald,@font/fredoka_bold,@font/nunito_extrabold,@font/nunito_bold,@raw/oswald_ofl,@raw/fredoka_ofl,@raw/nunito_ofl" />
