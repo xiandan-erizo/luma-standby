@@ -177,6 +177,7 @@ class ClockView @JvmOverloads constructor(
     private var liveExpandStartDragY: Float = 0f
     private var liveExpandAnimator: ValueAnimator? = null
 
+    private val posterDigits = PosterDigitPaths()
     private val appIconCache = LinkedHashMap<String, Drawable?>(8, 0.75f, true)
     private val nightRedIconFilter = ColorMatrixColorFilter(
         ColorMatrix(
@@ -1001,10 +1002,16 @@ class ClockView @JvmOverloads constructor(
         // Underlying clock pulls back smoothly into spatial depth (1.0 -> 0.90) as notification or island blooms
         val depthScale = 1f - 0.095f * combinedScrimP
 
+        val (bgColor, _) = if (theme.faceStyle == FaceStyle.POSTER) {
+            posterSurfaceColors(nightRed)
+        } else {
+            (if (darkSurface) Color.BLACK else colors.background) to colors.primary
+        }
+
         if (combinedScrimP > 0.001f) {
             // Paint solid full-bleed backdrop behind the scaled-down clock so no edge seam ever appears
             backgroundPaint.shader = null
-            backgroundPaint.color = if (darkSurface) Color.BLACK else colors.background
+            backgroundPaint.color = bgColor
             canvas.drawRect(0f, 0f, w, h, backgroundPaint)
         }
 
@@ -1169,6 +1176,10 @@ class ClockView @JvmOverloads constructor(
                         drawFullscreenBottomBar(canvas, w, h, widgetTiles, nightRed, darkSurface)
                     }
                 }
+
+                FaceStyle.POSTER -> {
+                    drawPosterFace(canvas, w, h, now, widgetTiles, nightRed, darkSurface)
+                }
             }
         }
         canvas.restore()
@@ -1178,10 +1189,24 @@ class ClockView @JvmOverloads constructor(
     // Background + Solar Atmospheric Horizon
     // -------------------------------------------------------------------------
 
+    private fun posterSurfaceColors(nightRed: Boolean): Pair<Int, Int> {
+        if (nightRed) return Color.BLACK to Color.parseColor("#FF3B30")
+        val explicitOled = theme.id == "ios-poster-oled" || theme.name.equals("Poster OLED", ignoreCase = true)
+        return if (colors.background == Color.BLACK && !explicitOled) {
+            Color.parseColor("#245666") to Color.parseColor("#FBC6D2")
+        } else {
+            colors.background to colors.primary
+        }
+    }
+
     private fun drawBackground(canvas: Canvas, w: Float, h: Float, nightRed: Boolean, darkSurface: Boolean) {
         if (nightRed) {
             backgroundPaint.shader = null
             backgroundPaint.color = Color.BLACK
+            canvas.drawRect(0f, 0f, w, h, backgroundPaint)
+        } else if (theme.faceStyle == FaceStyle.POSTER) {
+            backgroundPaint.shader = null
+            backgroundPaint.color = posterSurfaceColors(nightRed = false).first
             canvas.drawRect(0f, 0f, w, h, backgroundPaint)
         } else if (theme.gradient) {
             val key = theme.id + ":" + theme.background + ":" + theme.gradientEnd
@@ -1942,6 +1967,203 @@ class ClockView @JvmOverloads constructor(
         canvas.drawCircle(colonX, centerY - inkH * 0.16f, dotR, colonPaint)
         canvas.drawCircle(colonX, centerY + inkH * 0.16f, dotR, colonPaint)
         colonPaint.shader = null
+    }
+
+    // -------------------------------------------------------------------------
+    // FaceStyle.POSTER: Iconic iOS StandBy Digital Ultra-Condensed Poster Face
+    // -------------------------------------------------------------------------
+
+    private fun formatPosterTime(now: Calendar): String {
+        val hour24 = now.get(Calendar.HOUR_OF_DAY)
+        val hour = if (use24Hour) hour24 else (hour24 % 12).let { if (it == 0) 12 else it }
+        val minute = now.get(Calendar.MINUTE)
+        val hourText = if (use24Hour) String.format(Locale.US, "%02d", hour) else hour.toString()
+        val minText = String.format(Locale.US, "%02d", minute)
+        return "$hourText:$minText"
+    }
+
+    private fun drawPosterFace(
+        canvas: Canvas,
+        w: Float,
+        h: Float,
+        now: Calendar,
+        tiles: List<WidgetTile>,
+        nightRed: Boolean,
+        darkSurface: Boolean,
+    ) {
+        val (bgColor, fgColor) = posterSurfaceColors(nightRed)
+        val isDarkBg = isDark(bgColor) || nightRed
+        val infoColor = when {
+            nightRed -> Color.parseColor("#FF453A")
+            isDarkBg -> Color.WHITE
+            else -> fgColor
+        }
+
+        val timeStr = formatPosterTime(now)
+        val hasTopDock = liveActivities.isNotEmpty() || unreadSummary != null
+        var digitH = if (hasTopDock) min(h * 0.69f, w * 0.335f) else min(h * 0.72f, w * 0.345f)
+
+        val colGapRatio = 0.21f
+        val colWidthRatio = 0.50f
+        val rawTimeW = posterDigits.measureTime(timeStr, digitH)
+        val rawTotalW = rawTimeW + digitH * (colGapRatio + colWidthRatio)
+        val maxTotalW = w * 0.86f
+        if (rawTotalW > maxTotalW && rawTotalW > 1f) {
+            digitH *= maxTotalW / rawTotalW
+        }
+
+        val timeW = posterDigits.measureTime(timeStr, digitH)
+        val colGap = digitH * colGapRatio
+        val colW = digitH * colWidthRatio
+        val totalW = timeW + colGap + colW
+
+        val timeLeft = (w - totalW) * 0.5f
+        val digitTop = if (hasTopDock) (h - digitH) * 0.54f else (h - digitH) * 0.50f
+        val digitBottom = digitTop + digitH
+        val colLeft = timeLeft + timeW + colGap
+
+        // 1. Oversized ultra-condensed softly-rounded poster numerals (`16:25`)
+        posterDigits.drawTime(canvas, timeStr, timeLeft, digitTop, digitH, fgColor)
+
+        // 2. Right editorial info column: top-aligned Date + Weather, bottom-aligned Alarm / Battery
+        val locale = Locale.getDefault()
+        val dayNum = now.get(Calendar.DAY_OF_MONTH).toString()
+        val weekday = weekdayFormatter.format(now.time).uppercase(locale)
+        val dateText = "$dayNum $weekday"
+
+        val infoTextSize = (digitH * 0.118f).coerceIn(16f, 96f)
+        widgetSecondaryPaint.typeface = roundedBold
+        widgetSecondaryPaint.textAlign = Paint.Align.LEFT
+        widgetSecondaryPaint.textSize = infoTextSize
+        widgetSecondaryPaint.color = fgColor
+
+        // Top line: Blush Pink date flush with top of numerals (`19 周四` / `20 周五`)
+        val dateBaseline = digitTop - widgetSecondaryPaint.ascent() * 0.84f
+        val clippedDate = TextUtils.ellipsize(dateText, widgetSecondaryPaint, colW, TextUtils.TruncateAt.END).toString()
+        canvas.drawText(clippedDate, colLeft, dateBaseline, widgetSecondaryPaint)
+
+        // Second line right underneath date: Crisp solid monochrome Weather (`☁ 5°`)
+        val weatherTile = tiles.firstOrNull { it.content.kind == WidgetKind.WEATHER_HERO }
+        if (weatherTile != null) {
+            val c = weatherTile.content
+            val tempSize = infoTextSize * 1.08f
+            widgetSecondaryPaint.textSize = tempSize
+            widgetSecondaryPaint.color = infoColor
+            val weatherBaseline = dateBaseline + tempSize * 1.15f
+            val iconSize = tempSize * 1.08f
+            val iconGap = tempSize * 0.14f
+            var tx = colLeft
+            if (c.glyph != WidgetGlyph.NONE) {
+                val capMidY = weatherBaseline + (widgetSecondaryPaint.ascent() + widgetSecondaryPaint.descent()) * 0.42f
+                drawPosterGlyph(canvas, c.glyph, tx, capMidY - iconSize * 0.5f, iconSize, infoColor, bgColor)
+                tx += iconSize + iconGap
+            }
+            val tempAvail = (colLeft + colW - tx).coerceAtLeast(1f)
+            val clippedTemp = TextUtils.ellipsize(c.primary, widgetSecondaryPaint, tempAvail, TextUtils.TruncateAt.END).toString()
+            canvas.drawText(clippedTemp, tx, weatherBaseline, widgetSecondaryPaint)
+        }
+
+        // Bottom block flush with bottom edge of numerals: Alarm (`⏰ 08:40`) + optional Battery (`⚡ 100%`)
+        val alarmTile = tiles.firstOrNull { it.content.glyph == WidgetGlyph.ALARM }
+        val batteryTile = tiles.firstOrNull {
+            it.content.glyph == WidgetGlyph.BATTERY || it.content.glyph == WidgetGlyph.BOLT
+        }
+        val bottomItems = buildList {
+            if (alarmTile != null) add(alarmTile)
+            if (batteryTile != null) add(batteryTile)
+        }
+        if (bottomItems.isNotEmpty()) {
+            widgetSecondaryPaint.textSize = infoTextSize
+            widgetSecondaryPaint.color = infoColor
+            val rowGap = infoTextSize * 1.24f
+            val iconSize = infoTextSize * 0.94f
+            val iconGap = infoTextSize * 0.22f
+            // Anchor lowest item flush with digitBottom; stack second item neatly above if both exist.
+            bottomItems.forEachIndexed { idx, tile ->
+                val baseline = digitBottom - widgetSecondaryPaint.descent() * 0.22f - idx * rowGap
+                val c = tile.content
+                var tx = colLeft
+                if (c.glyph != WidgetGlyph.NONE) {
+                    val capMidY = baseline + (widgetSecondaryPaint.ascent() + widgetSecondaryPaint.descent()) * 0.42f
+                    drawPosterGlyph(canvas, c.glyph, tx, capMidY - iconSize * 0.5f, iconSize, infoColor, bgColor)
+                    tx += iconSize + iconGap
+                }
+                val avail = (colLeft + colW - tx).coerceAtLeast(1f)
+                val clipped = TextUtils.ellipsize(c.primary, widgetSecondaryPaint, avail, TextUtils.TruncateAt.END).toString()
+                canvas.drawText(clipped, tx, baseline, widgetSecondaryPaint)
+            }
+        }
+    }
+
+    /** Flat crisp SF-Symbol-style monochrome icons matching iOS StandBy Digital poster glyphs. */
+    private fun drawPosterGlyph(
+        canvas: Canvas,
+        glyph: WidgetGlyph,
+        x: Float,
+        y: Float,
+        size: Float,
+        fg: Int,
+        bg: Int,
+    ) {
+        when (glyph) {
+            WidgetGlyph.CLOUD, WidgetGlyph.PARTLY_CLOUDY -> {
+                canvas.save()
+                canvas.translate(x + size * 0.5f, y + size * 0.54f)
+                val s = size / 22f
+                canvas.scale(s, s)
+                cardFillPaint.shader = null
+                cardFillPaint.alpha = 255
+                cardFillPaint.color = fg
+                clipPath.reset()
+                clipPath.moveTo(-6.8f, 4.4f)
+                clipPath.cubicTo(-10.4f, 4.4f, -10.8f, -0.5f, -7.2f, -1.2f)
+                clipPath.cubicTo(-6.6f, -5.8f, -0.8f, -7.4f, 2.0f, -4.0f)
+                clipPath.cubicTo(4.0f, -5.2f, 7.0f, -3.5f, 6.8f, -0.9f)
+                clipPath.cubicTo(10.2f, -0.5f, 10.4f, 4.4f, 6.8f, 4.4f)
+                clipPath.close()
+                canvas.drawPath(clipPath, cardFillPaint)
+                canvas.restore()
+            }
+            WidgetGlyph.ALARM -> {
+                // Iconic solid filled Apple SF Symbol alarm clock with background-cutout hands
+                canvas.save()
+                canvas.translate(x, y)
+                val s = size / 24f
+                canvas.scale(s, s)
+                cardFillPaint.shader = null
+                cardFillPaint.alpha = 255
+                cardFillPaint.color = fg
+                // Twin top alarm bells + feet
+                canvas.drawCircle(5.4f, 5.6f, 2.4f, cardFillPaint)
+                canvas.drawCircle(18.6f, 5.6f, 2.4f, cardFillPaint)
+                canvas.drawCircle(12f, 13.0f, 8.2f, cardFillPaint)
+                // Little feet
+                cardRimPaint.shader = null
+                cardRimPaint.color = fg
+                cardRimPaint.strokeWidth = 2.2f
+                cardRimPaint.strokeCap = Paint.Cap.ROUND
+                canvas.drawLine(6.2f, 19.2f, 4.4f, 21.4f, cardRimPaint)
+                canvas.drawLine(17.8f, 19.2f, 19.6f, 21.4f, cardRimPaint)
+                // Cutout hands in background color
+                cardRimPaint.color = bg
+                cardRimPaint.strokeWidth = 1.85f
+                canvas.drawLine(12f, 8.2f, 12f, 13.0f, cardRimPaint)
+                canvas.drawLine(12f, 13.0f, 15.2f, 14.8f, cardRimPaint)
+                canvas.restore()
+            }
+            else -> {
+                WidgetIcons.draw(
+                    canvas = canvas,
+                    glyph = glyph,
+                    x = x,
+                    y = y,
+                    size = size,
+                    color = fg,
+                    secondaryColor = fg,
+                    nightRed = true,
+                )
+            }
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -2857,6 +3079,23 @@ class ClockView @JvmOverloads constructor(
             drawAnalogWatch(canvas, layout.clock, now, nightRed, darkSurface)
         } else if (theme.faceStyle == FaceStyle.FLOAT) {
             drawFloatFace(canvas, layout.clock, now, nightRed, darkSurface)
+        } else if (theme.faceStyle == FaceStyle.POSTER) {
+            val (_, fgColor) = posterSurfaceColors(nightRed)
+            val timeStr = formatPosterTime(now)
+            var digitH = layout.clock.height * 0.88f
+            val measuredW = posterDigits.measureTime(timeStr, digitH)
+            if (measuredW > layout.clock.width * 0.94f && measuredW > 1f) {
+                digitH *= (layout.clock.width * 0.94f) / measuredW
+            }
+            val finalW = posterDigits.measureTime(timeStr, digitH)
+            posterDigits.drawTime(
+                canvas = canvas,
+                text = timeStr,
+                left = layout.clock.centerX - finalW * 0.5f,
+                top = layout.clock.centerY - digitH * 0.5f,
+                digitH = digitH,
+                color = fgColor,
+            )
         } else {
             drawSolarGlassFace(canvas, layout.clock, now, nightRed, darkSurface)
         }

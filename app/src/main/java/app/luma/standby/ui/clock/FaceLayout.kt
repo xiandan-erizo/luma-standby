@@ -45,6 +45,15 @@ data class FaceLayout(
                     )
                 }
 
+                if (style == FaceStyle.POSTER) {
+                    return FaceLayout(
+                        clock = FaceBox(w * 0.08f, h * 0.145f, w * 0.70f, h * 0.865f),
+                        date = FaceBox(w * 0.72f, h * 0.145f, w * 0.94f, h * 0.865f),
+                        rightTiles = emptyList(),
+                        leftTile = null,
+                    )
+                }
+
                 // Centered symmetric dual-card stage modeled 1:1 on iPhone StandBy.
                 val stageTop = h * 0.100f
                 val stageBottom = h * 0.895f

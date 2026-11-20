@@ -75,6 +75,7 @@ object ThemeEditing {
             FaceStyle.SPLIT -> "Split"
             FaceStyle.FLOAT -> "Float"
             FaceStyle.SOLAR -> "Solar"
+            FaceStyle.POSTER -> "Poster"
         }
         val forked = if (base.builtIn) {
             base.copy(id = customId(seed), name = base.name + " " + styleLabel, builtIn = false)

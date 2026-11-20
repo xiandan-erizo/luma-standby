@@ -186,6 +186,7 @@
     <string name="style_split">双栏数字</string>
     <string name="style_float">Float 叠层</string>
     <string name="style_solar">液态玻璃</string>
+    <string name="style_poster">海报数字</string>
     <string name="notif_just_now">刚刚</string>
     <string name="notif_new">新通知</string>
     <string name="notif_tap_to_view">轻点查看</string>

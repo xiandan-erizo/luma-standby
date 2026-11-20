@@ -24,6 +24,7 @@ object ThemePresets {
     val iosPinkCyan = preset(PalettePresets.iosPinkCyan, FontChoice.ROUNDED)
     val iosMint = preset(PalettePresets.iosMint, FontChoice.ROUNDED)
     val iosSolar = preset(PalettePresets.iosSolar, FontChoice.ROUNDED)
+    val iosPosterTeal = preset(PalettePresets.iosPosterTeal, FontChoice.ROUNDED)
     val iosNightRed = preset(PalettePresets.iosNightRed, FontChoice.ROUNDED)
 
     val duskTeal = preset(PalettePresets.dusk, FontChoice.DISPLAY)

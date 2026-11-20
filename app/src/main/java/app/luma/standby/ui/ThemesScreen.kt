@@ -169,6 +169,7 @@ fun ThemesScreen(
                                         app.luma.standby.domain.model.FaceStyle.SPLIT -> R.string.style_split
                                         app.luma.standby.domain.model.FaceStyle.FLOAT -> R.string.style_float
                                         app.luma.standby.domain.model.FaceStyle.SOLAR -> R.string.style_solar
+                                        app.luma.standby.domain.model.FaceStyle.POSTER -> R.string.style_poster
                                     },
                                 ),
                             )

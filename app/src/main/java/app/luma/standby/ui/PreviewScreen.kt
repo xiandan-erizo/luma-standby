@@ -128,6 +128,7 @@ private fun styleLabel(style: FaceStyle): String = stringResource(
         FaceStyle.SPLIT -> R.string.style_split
         FaceStyle.FLOAT -> R.string.style_float
         FaceStyle.SOLAR -> R.string.style_solar
+        FaceStyle.POSTER -> R.string.style_poster
     },
 )
 

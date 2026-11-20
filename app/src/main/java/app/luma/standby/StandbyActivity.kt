@@ -702,6 +702,7 @@ class StandbyActivity : ComponentActivity() {
                 FaceStyle.SPLIT -> R.string.style_split
                 FaceStyle.FLOAT -> R.string.style_float
                 FaceStyle.SOLAR -> R.string.style_solar
+                FaceStyle.POSTER -> R.string.style_poster
             },
         )
         clockView.prepareTransition(directionX = 0, directionY = step)
@@ -715,8 +716,12 @@ class StandbyActivity : ComponentActivity() {
     }
 
     private fun cycleIosPalette(step: Int) {
-        val palettes = PalettePresets.groupIos
         val currentTheme = settings.currentTheme()
+        val palettes = if (currentTheme.faceStyle == FaceStyle.POSTER) {
+            PalettePresets.groupPoster
+        } else {
+            PalettePresets.groupIos
+        }
         val idx = palettes.indexOfFirst {
             it.background.equals(currentTheme.background, ignoreCase = true) &&
                 it.primary.equals(currentTheme.primary, ignoreCase = true) &&

@@ -81,6 +81,69 @@ object PalettePresets {
         faceStyle = FaceStyle.ANALOG,
         brightnessProfile = BrightnessProfile.NIGHT,
     )
+    val iosPosterTeal = LumaTheme(
+        id = "ios-poster-teal",
+        name = "Poster Teal",
+        background = "#245666",
+        primary = "#FBC6D2",
+        secondary = "#FFFFFF",
+        accent = "#FBC6D2",
+        font = app.luma.standby.domain.model.FontChoice.ROUNDED,
+        faceStyle = FaceStyle.POSTER,
+        brightnessProfile = BrightnessProfile.STANDARD,
+    )
+
+    // Curated Morandi colorways for horizontal swiping on FaceStyle.POSTER
+    val posterForestButter = LumaTheme(
+        id = "ios-poster-forest",
+        name = "Poster Forest",
+        background = "#1E4738",
+        primary = "#F5E09B",
+        secondary = "#FFFFFF",
+        accent = "#F5E09B",
+        font = app.luma.standby.domain.model.FontChoice.ROUNDED,
+        faceStyle = FaceStyle.POSTER,
+    )
+    val posterPlumPeach = LumaTheme(
+        id = "ios-poster-plum",
+        name = "Poster Plum",
+        background = "#54293A",
+        primary = "#F9C4B4",
+        secondary = "#FFFFFF",
+        accent = "#F9C4B4",
+        font = app.luma.standby.domain.model.FontChoice.ROUNDED,
+        faceStyle = FaceStyle.POSTER,
+    )
+    val posterIndigoLilac = LumaTheme(
+        id = "ios-poster-indigo",
+        name = "Poster Indigo",
+        background = "#273554",
+        primary = "#D7CCFF",
+        secondary = "#FFFFFF",
+        accent = "#D7CCFF",
+        font = app.luma.standby.domain.model.FontChoice.ROUNDED,
+        faceStyle = FaceStyle.POSTER,
+    )
+    val posterOliveCream = LumaTheme(
+        id = "ios-poster-olive",
+        name = "Poster Olive",
+        background = "#384B3C",
+        primary = "#F2E6C8",
+        secondary = "#FFFFFF",
+        accent = "#F2E6C8",
+        font = app.luma.standby.domain.model.FontChoice.ROUNDED,
+        faceStyle = FaceStyle.POSTER,
+    )
+    val posterOledBlush = LumaTheme(
+        id = "ios-poster-oled",
+        name = "Poster OLED",
+        background = "#000000",
+        primary = "#FBC6D2",
+        secondary = "#FFFFFF",
+        accent = "#FBC6D2",
+        font = app.luma.standby.domain.model.FontChoice.ROUNDED,
+        faceStyle = FaceStyle.POSTER,
+    )
 
     // A: coloured dark surfaces. Saturation deliberately restrained.
     val dusk = LumaTheme("dusk-teal", "Dusk Teal", "#2A4A52", "#E8C9B8", "#9DB4B0", "#D9A97F")
@@ -125,7 +188,10 @@ object PalettePresets {
     val coolGrey = LumaTheme("cool-grey", "Cool Grey", "#E4E5E3", "#1E1F1E", "#6E706E", "#444645")
 
     val groupIos: List<LumaTheme> = listOf(
-        iosFloatBlue, iosCoral, iosPinkCyan, iosMint, iosSolar, iosNightRed,
+        iosFloatBlue, iosCoral, iosPinkCyan, iosMint, iosSolar, iosPosterTeal, iosNightRed,
+    )
+    val groupPoster: List<LumaTheme> = listOf(
+        iosPosterTeal, posterForestButter, posterPlumPeach, posterIndigoLilac, posterOliveCream, posterOledBlush,
     )
     val groupA: List<LumaTheme> = listOf(dusk, petrol, oliveClay, wineSlate, indigoMist, graphiteGold)
     val groupB: List<LumaTheme> = listOf(

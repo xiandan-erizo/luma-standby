@@ -434,6 +434,43 @@ class StandbyFaceRenderTest {
         redView.draw(Canvas(redBmp))
         savePng(redBmp, File(outDir, "14_island_night_red.png"))
         assertTrue(countNonBlack(redBmp) > 15_000)
+
+        // 6. Iconic iOS StandBy Poster Teal & Blush (`FaceStyle.POSTER`) + All 10 Digits Specimen
+        val posterSettings = LumaSettings(
+            themeId = "ios-poster-teal",
+            widgetPlacements = listOf(
+                StoredPlacement("weather", "TOP_RIGHT"),
+                StoredPlacement("alarm", "BOTTOM_RIGHT"),
+            ),
+        )
+        val posterTiles = WidgetRenderer.tiles(
+            settings = posterSettings,
+            data = WidgetData(
+                weather = WeatherInfo(
+                    temperatureC = 5,
+                    condition = WeatherCondition.CLOUDY,
+                    updatedAtMillis = System.currentTimeMillis(),
+                    city = "北京",
+                ),
+                nextAlarm = AlarmInfo(hour = 8, minute = 40),
+            ),
+            context = context,
+        )
+        val posterBmp = renderClock(1600, 720, ThemePresets.iosPosterTeal, posterTiles)
+        savePng(posterBmp, File(outDir, "15_poster_teal_reference.png"))
+        assertTrue("Poster Teal renders cleanly", countNonBlack(posterBmp) > 80_000)
+
+        // Render all 10 custom vector poster digits (`01234` + `56789`) on teal backdrop for visual audit!
+        val specimenBmp = Bitmap.createBitmap(1600, 720, Bitmap.Config.ARGB_8888)
+        val sc = Canvas(specimenBmp)
+        sc.drawColor(Color.parseColor("#245666"))
+        val digits = app.luma.standby.ui.clock.PosterDigitPaths()
+        val pink = Color.parseColor("#FBC6D2")
+        digits.drawTime(sc, "16:25", 90f, 60f, 270f, pink)
+        digits.drawTime(sc, "03:47", 860f, 60f, 270f, pink)
+        digits.drawTime(sc, "08:92", 90f, 390f, 270f, pink)
+        digits.drawTime(sc, "14:58", 860f, 390f, 270f, pink)
+        savePng(specimenBmp, File(outDir, "16_poster_digits_specimen.png"))
     }
 
     private fun renderClock(

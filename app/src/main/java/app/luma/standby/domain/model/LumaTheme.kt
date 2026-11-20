@@ -30,6 +30,7 @@ enum class FaceStyle {
     SPLIT,
     FLOAT,
     SOLAR,
+    POSTER,
 }
 
 @Serializable
