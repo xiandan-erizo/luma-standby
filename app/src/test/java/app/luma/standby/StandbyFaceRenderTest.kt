@@ -217,6 +217,9 @@ class StandbyFaceRenderTest {
         assertTrue(merged and NotificationManager.Policy.SUPPRESSED_EFFECT_BADGE != 0)
         assertTrue(HeadsUpPolicyMath.ALL_AUDIBLE_CATEGORIES and NotificationManager.Policy.PRIORITY_CATEGORY_ALARMS != 0)
         assertTrue(HeadsUpPolicyMath.ALL_AUDIBLE_CATEGORIES and NotificationManager.Policy.PRIORITY_CATEGORY_CALLS != 0)
+        // Messages must be intercepted by DND so SUPPRESSED_EFFECT_PEEK actually hides OS floating banners.
+        assertEquals(0, HeadsUpPolicyMath.ALL_AUDIBLE_CATEGORIES and NotificationManager.Policy.PRIORITY_CATEGORY_MESSAGES)
+        assertEquals(0, HeadsUpPolicyMath.ALL_AUDIBLE_CATEGORIES and NotificationManager.Policy.PRIORITY_CATEGORY_CONVERSATIONS)
         // Android 15+ restores via INTERRUPTION_FILTER_ALL (deactivating only our app's implicit ZenRule);
         // older SDKs restore the exact pre-Standby saved filter.
         assertEquals(

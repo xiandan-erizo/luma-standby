@@ -12,16 +12,19 @@ import android.provider.Settings
  * media, or notification sounds.
  */
 internal object HeadsUpPolicyMath {
+    /**
+     * Keeps alarms, media, system sounds, calls and repeat callers audible, while
+     * intentionally intercepting message/chat notifications so Android & HyperOS
+     * apply [NotificationManager.Policy.SUPPRESSED_EFFECT_PEEK] and suppress the OS
+     * floating white heads-up banner (Luma's NotificationListenerService still receives
+     * every message immediately to show its Liquid Glass StandBy card).
+     */
     const val ALL_AUDIBLE_CATEGORIES: Int =
         NotificationManager.Policy.PRIORITY_CATEGORY_ALARMS or
             NotificationManager.Policy.PRIORITY_CATEGORY_MEDIA or
             NotificationManager.Policy.PRIORITY_CATEGORY_SYSTEM or
-            NotificationManager.Policy.PRIORITY_CATEGORY_REMINDERS or
-            NotificationManager.Policy.PRIORITY_CATEGORY_EVENTS or
-            NotificationManager.Policy.PRIORITY_CATEGORY_MESSAGES or
             NotificationManager.Policy.PRIORITY_CATEGORY_CALLS or
-            NotificationManager.Policy.PRIORITY_CATEGORY_REPEAT_CALLERS or
-            NotificationManager.Policy.PRIORITY_CATEGORY_CONVERSATIONS
+            NotificationManager.Policy.PRIORITY_CATEGORY_REPEAT_CALLERS
 
     fun suppressedVisualEffects(existing: Int): Int =
         existing or NotificationManager.Policy.SUPPRESSED_EFFECT_PEEK
