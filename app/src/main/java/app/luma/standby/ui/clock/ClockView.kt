@@ -2800,6 +2800,7 @@ class ClockView @JvmOverloads constructor(
         skyCard: Boolean = false,
     ) {
         rectScratch.set(box.left, box.top, box.right, box.bottom)
+        cardFillPaint.alpha = 255
         cardFillPaint.shader = LinearGradient(box.left, box.top, box.left, box.bottom, topColor, bottomColor, Shader.TileMode.CLAMP)
         canvas.drawRoundRect(rectScratch, cornerR, cornerR, cardFillPaint)
         cardFillPaint.shader = null
