@@ -289,10 +289,12 @@ class StandbyActivity : ComponentActivity() {
 
     private fun applySettings(settings: LumaSettings) {
         val theme = settings.currentTheme()
+        val lowPower = powerController.isPowerSaveMode() || settings.mode == DisplayMode.ULTRA_LOW_POWER
+        clockView.animationsEnabled = !lowPower
         clockView.applyState(
             theme = theme,
             use24HourOverride = settings.use24Hour,
-            showSecondsOverride = if (powerController.isPowerSaveMode() || settings.mode == DisplayMode.ULTRA_LOW_POWER) false else settings.showSeconds,
+            showSecondsOverride = if (lowPower) false else settings.showSeconds,
             burnInShift = settings.burnInShift,
             hint = getString(R.string.exit_standby_hint),
         )
@@ -435,6 +437,7 @@ class StandbyActivity : ComponentActivity() {
                 FaceStyle.SOLAR -> R.string.style_solar
             },
         )
+        clockView.prepareTransition(directionX = 0, directionY = step)
         clockView.flashBanner(label)
         lifecycleScope.launch {
             repository.update { current ->
@@ -453,6 +456,7 @@ class StandbyActivity : ComponentActivity() {
                 it.accent.equals(currentTheme.accent, ignoreCase = true)
         }.let { if (it < 0) 0 else it }
         val nextPalette = palettes[(idx + step + palettes.size) % palettes.size]
+        clockView.prepareTransition(directionX = step, directionY = 0)
         clockView.flashBanner(nextPalette.name)
         lifecycleScope.launch {
             repository.update { current ->

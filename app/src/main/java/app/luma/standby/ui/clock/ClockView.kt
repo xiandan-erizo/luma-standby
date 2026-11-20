@@ -1,9 +1,13 @@
 package app.luma.standby.ui.clock
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ValueAnimator
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.ColorMatrix
@@ -29,6 +33,8 @@ import android.text.TextUtils
 import android.text.format.DateFormat
 import android.util.AttributeSet
 import android.view.View
+import android.view.animation.OvershootInterpolator
+import android.view.animation.PathInterpolator
 import androidx.core.content.ContextCompat
 import app.luma.standby.R
 import app.luma.standby.domain.BurnInDrift
@@ -141,7 +147,9 @@ class ClockView @JvmOverloads constructor(
 
     private var widgetTiles: List<WidgetTile> = emptyList()
     private var activeAlert: StandbyNotificationAlert? = null
+    private var renderedAlert: StandbyNotificationAlert? = null
     private var unreadSummary: UnreadNotificationSummary? = null
+    private var renderedUnread: UnreadNotificationSummary? = null
     private val unreadPillBounds = RectF()
     private val appIconCache = LinkedHashMap<String, Drawable?>(8, 0.75f, true)
     private val nightRedIconFilter = ColorMatrixColorFilter(
@@ -155,6 +163,33 @@ class ClockView @JvmOverloads constructor(
         ),
     )
 
+    // Finite, event-driven iOS StandBy animations (zero idle timers/loops).
+    var animationsEnabled: Boolean = true
+    private val iosFluidEase = PathInterpolator(0.22f, 1.0f, 0.36f, 1.0f)
+    private val iosEaseOut = PathInterpolator(0.16f, 1.0f, 0.30f, 1.0f)
+    private val iosSpringPop = OvershootInterpolator(0.75f)
+    private val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+
+    private var alertProgress: Float = 0f
+    private var alertSpringProgress: Float = 0f
+    private var alertRevealProgress: Float = 1f
+    private var alertAnimator: ValueAnimator? = null
+    private var alertSpringAnimator: ValueAnimator? = null
+    private var alertRevealAnimator: ValueAnimator? = null
+
+    private var unreadPillProgress: Float = 0f
+    private var unreadPillAnimator: ValueAnimator? = null
+
+    private var hintAnimator: ValueAnimator? = null
+
+    private var outgoingBitmap: Bitmap? = null
+    private var transitionProgress: Float = 1f
+    private var transitionDirX: Int = 0
+    private var transitionDirY: Int = 0
+    private var transitionArmed: Boolean = false
+    private var transitionAnimator: ValueAnimator? = null
+    private var capturingSnapshot: Boolean = false
+
     /** Called once per redraw, before the frame is drawn. */
     var onTick: (() -> Unit)? = null
 
@@ -164,9 +199,7 @@ class ClockView @JvmOverloads constructor(
     }
     private val hintHandler = Handler(Looper.getMainLooper())
     private val hideHint = Runnable {
-        hintAlpha = 0f
-        bannerText = null
-        invalidate()
+        animateHintTo(0f, clearBannerOnEnd = true)
     }
 
     private var fullDateFormatter: SimpleDateFormat = buildFullDateFormatter()
@@ -201,6 +234,7 @@ class ClockView @JvmOverloads constructor(
         burnInShift: Boolean,
         hint: String? = null,
     ) {
+        val visualChanged = theme != this.theme
         this.theme = theme
         this.colors = theme.resolveColors()
         this.use24HourOverride = use24HourOverride
@@ -209,26 +243,64 @@ class ClockView @JvmOverloads constructor(
         this.burnInDrift = burnInShift
         this.hintText = hint
         scheduler.secondsEnabled = this.showSeconds
-        if (hint.isNullOrEmpty() && bannerText.isNullOrEmpty()) hintAlpha = 0f
-        invalidate()
+        if (hint.isNullOrEmpty() && bannerText.isNullOrEmpty()) {
+            hintAnimator?.cancel()
+            hintAlpha = 0f
+        }
+        if (transitionArmed && visualChanged) {
+            transitionArmed = false
+            startFaceTransitionAnimator()
+        } else {
+            invalidate()
+        }
     }
 
-    /** Show the exit hint briefly on touch. */
+    /**
+     * Captures a lightweight snapshot of the outgoing face right before a vertical
+     * face switch or horizontal palette switch so the new face glides smoothly in.
+     */
+    fun prepareTransition(directionX: Int, directionY: Int) {
+        if (!shouldAnimate() || width <= 0 || height <= 0) {
+            releaseOutgoingBitmap()
+            return
+        }
+        transitionAnimator?.cancel()
+        releaseOutgoingBitmap()
+        val snapW = (width / 2).coerceAtLeast(1)
+        val snapH = (height / 2).coerceAtLeast(1)
+        val snap = runCatching {
+            Bitmap.createBitmap(snapW, snapH, Bitmap.Config.ARGB_8888).also { bmp ->
+                val c = Canvas(bmp)
+                c.scale(snapW.toFloat() / width.toFloat(), snapH.toFloat() / height.toFloat())
+                capturingSnapshot = true
+                try {
+                    drawBaseFace(c, width.toFloat(), height.toFloat())
+                } finally {
+                    capturingSnapshot = false
+                }
+            }
+        }.getOrNull()
+        outgoingBitmap = snap
+        transitionDirX = directionX
+        transitionDirY = directionY
+        transitionProgress = 0f
+        transitionArmed = snap != null
+    }
+
+    /** Show the exit hint briefly on touch with smooth fade-in and fade-out. */
     fun flashHint() {
         if (hintText.isNullOrEmpty()) return
         bannerText = null
-        hintAlpha = 1f
-        invalidate()
+        animateHintTo(1f, clearBannerOnEnd = false)
         hintHandler.removeCallbacks(hideHint)
         hintHandler.postDelayed(hideHint, HINT_VISIBLE_MS)
     }
 
-    /** Show a brief Liquid Glass style-switch pill when swiping faces in Standby. */
+    /** Show a brief Liquid Glass style-switch pill with smooth glide and fade. */
     fun flashBanner(label: String) {
         if (label.isBlank()) return
         bannerText = label
-        hintAlpha = 1f
-        invalidate()
+        animateHintTo(1f, clearBannerOnEnd = false)
         hintHandler.removeCallbacks(hideHint)
         hintHandler.postDelayed(hideHint, BANNER_VISIBLE_MS)
     }
@@ -240,19 +312,72 @@ class ClockView @JvmOverloads constructor(
         if (changed) invalidate()
     }
 
-    /** Show or dismiss the full-screen iOS StandBy incoming notification overlay. */
+    /** Show, update (e.g. tap-to-reveal), or smoothly dismiss the full-screen iOS alert. */
     fun setActiveAlert(alert: StandbyNotificationAlert?) {
         if (alert == activeAlert) return
+        val previous = activeAlert
         activeAlert = alert
-        invalidate()
+
+        if (alert != null) {
+            val isRevealUpdate = previous != null && !previous.revealed && alert.revealed &&
+                previous.appLabel == alert.appLabel && previous.title == alert.title
+            renderedAlert = alert
+
+            if (!shouldAnimate()) {
+                alertAnimator?.cancel()
+                alertSpringAnimator?.cancel()
+                alertRevealAnimator?.cancel()
+                alertProgress = 1f
+                alertSpringProgress = 1f
+                alertRevealProgress = 1f
+                invalidate()
+                return
+            }
+
+            if (isRevealUpdate) {
+                alertRevealAnimator?.cancel()
+                alertRevealProgress = 0f
+                alertRevealAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+                    duration = 260L
+                    interpolator = iosFluidEase
+                    addUpdateListener {
+                        alertRevealProgress = it.animatedValue as Float
+                        invalidate()
+                    }
+                    start()
+                }
+            } else {
+                alertRevealAnimator?.cancel()
+                alertRevealProgress = 1f
+                animateAlertTransition(entering = true)
+            }
+        } else {
+            if (!shouldAnimate() || renderedAlert == null) {
+                alertAnimator?.cancel()
+                alertSpringAnimator?.cancel()
+                alertRevealAnimator?.cancel()
+                renderedAlert = null
+                alertProgress = 0f
+                alertSpringProgress = 0f
+                alertRevealProgress = 1f
+                invalidate()
+                return
+            }
+            animateAlertTransition(entering = false)
+        }
     }
 
-    /** Show or hide the sleek top-center Liquid Glass unread notification pill. */
+    /** Show or hide the sleek top-center Liquid Glass unread pill with smooth slide/fade. */
     fun setUnreadSummary(summary: UnreadNotificationSummary?) {
         if (summary == unreadSummary) return
         unreadSummary = summary
-        if (summary == null) unreadPillBounds.setEmpty()
-        invalidate()
+        if (summary != null) {
+            renderedUnread = summary
+            animateUnreadPillTo(1f)
+        } else {
+            unreadPillBounds.setEmpty()
+            animateUnreadPillTo(0f)
+        }
     }
 
     /** Returns true if a tap lands on the top unread notification pill (with generous touch pad). */
@@ -265,10 +390,17 @@ class ClockView @JvmOverloads constructor(
             y <= unreadPillBounds.bottom + pad
     }
 
-    /** Drops all in-memory notification content & cached app icons (pause / screen-off). */
+    /** Drops all in-memory notification content, transition snapshots & cached app icons. */
     fun clearSensitiveMemory() {
+        cancelAllAnimations()
         activeAlert = null
+        renderedAlert = null
         unreadSummary = null
+        renderedUnread = null
+        alertProgress = 0f
+        alertSpringProgress = 0f
+        alertRevealProgress = 1f
+        unreadPillProgress = 0f
         unreadPillBounds.setEmpty()
         appIconCache.clear()
         invalidate()
@@ -282,6 +414,7 @@ class ClockView @JvmOverloads constructor(
     fun pauseTicking() {
         scheduler.stop()
         hintHandler.removeCallbacks(hideHint)
+        cancelAllAnimations()
         unregisterTimeReceiver()
     }
 
@@ -294,9 +427,150 @@ class ClockView @JvmOverloads constructor(
     override fun onDetachedFromWindow() {
         scheduler.stop()
         hintHandler.removeCallbacks(hideHint)
+        cancelAllAnimations()
         unregisterTimeReceiver()
         appIconCache.clear()
         super.onDetachedFromWindow()
+    }
+
+    private fun shouldAnimate(): Boolean =
+        animationsEnabled && isAttachedToWindow && ValueAnimator.areAnimatorsEnabled()
+
+    private fun cancelAllAnimations() {
+        alertAnimator?.cancel()
+        alertSpringAnimator?.cancel()
+        alertRevealAnimator?.cancel()
+        unreadPillAnimator?.cancel()
+        hintAnimator?.cancel()
+        transitionAnimator?.cancel()
+        transitionArmed = false
+        transitionProgress = 1f
+        releaseOutgoingBitmap()
+    }
+
+    private fun releaseOutgoingBitmap() {
+        outgoingBitmap?.let { if (!it.isRecycled) it.recycle() }
+        outgoingBitmap = null
+    }
+
+    private fun startFaceTransitionAnimator() {
+        transitionAnimator?.cancel()
+        if (!shouldAnimate() || outgoingBitmap == null) {
+            transitionProgress = 1f
+            releaseOutgoingBitmap()
+            invalidate()
+            return
+        }
+        val durationMs = if (transitionDirY != 0) 380L else 320L
+        transitionProgress = 0f
+        transitionAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = durationMs
+            interpolator = iosFluidEase
+            addUpdateListener {
+                transitionProgress = it.animatedValue as Float
+                invalidate()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    transitionProgress = 1f
+                    releaseOutgoingBitmap()
+                    invalidate()
+                }
+            })
+            start()
+        }
+    }
+
+    private fun animateAlertTransition(entering: Boolean) {
+        alertAnimator?.cancel()
+        alertSpringAnimator?.cancel()
+        val target = if (entering) 1f else 0f
+
+        alertAnimator = ValueAnimator.ofFloat(alertProgress, target).apply {
+            duration = if (entering) 340L else 240L
+            interpolator = iosEaseOut
+            addUpdateListener {
+                alertProgress = it.animatedValue as Float
+                invalidate()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    if (!entering && activeAlert == null) {
+                        renderedAlert = null
+                        alertProgress = 0f
+                        alertSpringProgress = 0f
+                        invalidate()
+                    }
+                }
+            })
+            start()
+        }
+
+        alertSpringAnimator = ValueAnimator.ofFloat(alertSpringProgress, target).apply {
+            duration = if (entering) 420L else 230L
+            interpolator = if (entering) iosSpringPop else iosEaseOut
+            addUpdateListener {
+                alertSpringProgress = it.animatedValue as Float
+                invalidate()
+            }
+            start()
+        }
+    }
+
+    private fun animateUnreadPillTo(target: Float) {
+        unreadPillAnimator?.cancel()
+        if (!shouldAnimate()) {
+            unreadPillProgress = target
+            if (target <= 0f) renderedUnread = null
+            invalidate()
+            return
+        }
+        unreadPillAnimator = ValueAnimator.ofFloat(unreadPillProgress, target).apply {
+            duration = if (target > 0f) 280L else 200L
+            interpolator = iosFluidEase
+            addUpdateListener {
+                unreadPillProgress = it.animatedValue as Float
+                invalidate()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    if (target <= 0f && unreadSummary == null) {
+                        renderedUnread = null
+                        unreadPillProgress = 0f
+                        invalidate()
+                    }
+                }
+            })
+            start()
+        }
+    }
+
+    private fun animateHintTo(target: Float, clearBannerOnEnd: Boolean) {
+        hintAnimator?.cancel()
+        if (!shouldAnimate()) {
+            hintAlpha = target
+            if (clearBannerOnEnd && target <= 0f) bannerText = null
+            invalidate()
+            return
+        }
+        hintAnimator = ValueAnimator.ofFloat(hintAlpha, target).apply {
+            duration = if (target > 0f) 200L else 320L
+            interpolator = if (target > 0f) iosFluidEase else iosEaseOut
+            addUpdateListener {
+                hintAlpha = it.animatedValue as Float
+                invalidate()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    if (clearBannerOnEnd && target <= 0f && hintAlpha <= 0.01f) {
+                        hintAlpha = 0f
+                        bannerText = null
+                        invalidate()
+                    }
+                }
+            })
+            start()
+        }
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -309,6 +583,83 @@ class ClockView @JvmOverloads constructor(
         val h = height.toFloat()
         if (w <= 0f || h <= 0f) return
 
+        val nightRed = isNightRed()
+        val darkSurface = isDark(colors.background) || nightRed
+
+        // Underlying clock subtly scales back into spatial depth when an iOS alert blooms.
+        val alertP = alertProgress.coerceIn(0f, 1f)
+        val depthScale = 1f - 0.055f * alertP
+
+        canvas.save()
+        if (alertP > 0.001f) {
+            canvas.scale(depthScale, depthScale, w * 0.5f, h * 0.5f)
+        }
+
+        val outBmp = outgoingBitmap
+        if (!capturingSnapshot && outBmp != null && !outBmp.isRecycled && transitionProgress < 0.999f) {
+            val p = transitionProgress.coerceIn(0f, 1f)
+            // Pure OLED black base behind cross-sliding faces
+            backgroundPaint.shader = null
+            backgroundPaint.color = if (darkSurface) Color.BLACK else colors.background
+            canvas.drawRect(0f, 0f, w, h, backgroundPaint)
+
+            // 1. Outgoing face glides away smoothly
+            val outAlpha = ((1f - p * 1.15f).coerceIn(0f, 1f) * 255f).toInt()
+            if (outAlpha > 0) {
+                val outScale = 1f - 0.055f * p
+                val outTx = -transitionDirX * w * 0.14f * p
+                val outTy = -transitionDirY * h * 0.22f * p
+                canvas.save()
+                canvas.translate(outTx, outTy)
+                canvas.scale(outScale, outScale, w * 0.5f, h * 0.5f)
+                bitmapPaint.alpha = outAlpha
+                rectScratch.set(0f, 0f, w, h)
+                canvas.drawBitmap(outBmp, null, rectScratch, bitmapPaint)
+                bitmapPaint.alpha = 255
+                canvas.restore()
+            }
+
+            // 2. Incoming new face glides in with iOS fluid ease-out
+            val inAlpha = ((p * 1.15f).coerceIn(0f, 1f) * 255f).toInt()
+            if (inAlpha > 0) {
+                val inScale = 0.945f + 0.055f * p
+                val inTx = transitionDirX * w * 0.14f * (1f - p)
+                val inTy = transitionDirY * h * 0.24f * (1f - p)
+                layerBounds.set(0f, 0f, w, h)
+                val inLayer = canvas.saveLayerAlpha(layerBounds, inAlpha)
+                canvas.translate(inTx, inTy)
+                canvas.scale(inScale, inScale, w * 0.5f, h * 0.5f)
+                drawBaseFace(canvas, w, h)
+                canvas.restoreToCount(inLayer)
+            }
+        } else {
+            drawBaseFace(canvas, w, h)
+        }
+        canvas.restore()
+
+        val drift = driftFor()
+        canvas.save()
+        canvas.translate(drift.first, drift.second)
+
+        // Top-center Liquid Glass unread pill (smoothly fades out as full-screen alert blooms)
+        val pillVis = (unreadPillProgress * (1f - alertP)).coerceIn(0f, 1f)
+        if (pillVis > 0.01f && renderedUnread != null) {
+            drawUnreadNotificationPill(canvas, w, h, nightRed, darkSurface, pillVis)
+        } else if (activeAlert != null || renderedUnread == null) {
+            unreadPillBounds.setEmpty()
+        }
+
+        // Full-screen iOS StandBy Notification Card (with spring entrance & smooth tuck-away)
+        val alert = renderedAlert
+        if (alert != null && alertP > 0.005f) {
+            drawNotificationOverlay(canvas, w, h, alert, nightRed, darkSurface, alertP, alertSpringProgress)
+        } else {
+            drawTransientIndicator(canvas, w, h, nightRed, darkSurface)
+        }
+        canvas.restore()
+    }
+
+    private fun drawBaseFace(canvas: Canvas, w: Float, h: Float) {
         val now = Calendar.getInstance()
         val nightRed = isNightRed()
         val darkSurface = isDark(colors.background) || nightRed
@@ -353,15 +704,6 @@ class ClockView @JvmOverloads constructor(
                     drawSolarGlassFace(canvas, layout.clock, now, nightRed, darkSurface)
                 }
             }
-        }
-
-        val alert = activeAlert
-        if (alert != null) {
-            unreadPillBounds.setEmpty()
-            drawNotificationOverlay(canvas, w, h, alert, nightRed, darkSurface)
-        } else {
-            drawUnreadNotificationPill(canvas, w, h, nightRed, darkSurface)
-            drawTransientIndicator(canvas, w, h, nightRed, darkSurface)
         }
         canvas.restore()
     }
@@ -2110,15 +2452,17 @@ class ClockView @JvmOverloads constructor(
         h: Float,
         nightRed: Boolean,
         darkSurface: Boolean,
+        visibility: Float,
     ) {
-        val summary = unreadSummary
-        if (summary == null || summary.count <= 0) {
+        val summary = renderedUnread
+        if (summary == null || summary.count <= 0 || visibility <= 0.01f) {
             unreadPillBounds.setEmpty()
             return
         }
 
         val pillH = (h * 0.056f).coerceIn(28f, 72f)
-        val pillTop = (h * 0.036f).coerceAtLeast(10f)
+        val slideOffset = -pillH * 0.45f * (1f - visibility)
+        val pillTop = (h * 0.036f).coerceAtLeast(10f) + slideOffset
         val padX = pillH * 0.42f
         val iconSize = pillH * 0.56f
         val iconGap = pillH * 0.24f
@@ -2138,7 +2482,13 @@ class ClockView @JvmOverloads constructor(
         val pillW = padX * 2f + iconSize + iconGap + textW
         val pillLeft = w * 0.5f - pillW * 0.5f
         val pillBox = FaceBox(pillLeft, pillTop, pillLeft + pillW, pillTop + pillH)
-        unreadPillBounds.set(pillBox.left, pillBox.top, pillBox.right, pillBox.bottom)
+        if (unreadSummary != null && activeAlert == null) {
+            unreadPillBounds.set(pillBox.left, pillBox.top, pillBox.right, pillBox.bottom)
+        }
+
+        val layerAlpha = (visibility * 255f).toInt().coerceIn(0, 255)
+        layerBounds.set(pillBox.left - 8f, pillBox.top - 8f, pillBox.right + 8f, pillBox.bottom + 8f)
+        val pillLayer = canvas.saveLayerAlpha(layerBounds, layerAlpha)
 
         val fillTop = when {
             nightRed -> Color.argb(175, 38, 6, 6)
@@ -2169,13 +2519,13 @@ class ClockView @JvmOverloads constructor(
         }
         val textY = pillBox.centerY - (widgetSecondaryPaint.ascent() + widgetSecondaryPaint.descent()) * 0.5f
         canvas.drawText(clipped, iconLeft + iconSize + iconGap, textY, widgetSecondaryPaint)
+        canvas.restoreToCount(pillLayer)
     }
 
     /**
      * 1:1 iOS 26/27 StandBy Full-Screen Incoming Notification Overlay:
-     * Frosted dark backdrop + ambient radial halo + centered Liquid Glass hero card
-     * featuring giant squircle app icon, bold desk-legible title (or Tap-to-View privacy shield),
-     * and sleek iOS bottom pill handle.
+     * Smoothly dims the clock behind, blooms a Liquid Glass hero card with iOS spring
+     * physics from the top-center pill, and smoothly tucks away on dismiss.
      */
     private fun drawNotificationOverlay(
         canvas: Canvas,
@@ -2184,13 +2534,16 @@ class ClockView @JvmOverloads constructor(
         alert: StandbyNotificationAlert,
         nightRed: Boolean,
         darkSurface: Boolean,
+        progress: Float,
+        springProgress: Float,
     ) {
-        // 1. Frosted ambient backdrop dimming the underlying clock softly
+        val scrimP = progress.coerceIn(0f, 1f)
+        // 1. Frosted ambient backdrop smoothly dimming the underlying clock
         cardFillPaint.shader = null
         cardFillPaint.color = when {
-            nightRed -> Color.argb(236, 0, 0, 0)
-            darkSurface -> Color.argb(222, 4, 5, 8)
-            else -> Color.argb(205, 228, 231, 238)
+            nightRed -> Color.argb((236 * scrimP).toInt(), 0, 0, 0)
+            darkSurface -> Color.argb((222 * scrimP).toInt(), 4, 5, 8)
+            else -> Color.argb((205 * scrimP).toInt(), 228, 231, 238)
         }
         canvas.drawRect(0f, 0f, w, h, cardFillPaint)
 
@@ -2200,7 +2553,7 @@ class ClockView @JvmOverloads constructor(
             val haloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 shader = RadialGradient(
                     w * 0.5f, h * 0.5f, max(w, h) * 0.46f,
-                    intArrayOf(withAlpha(accentGlow, if (nightRed) 0.22f else 0.28f), Color.TRANSPARENT),
+                    intArrayOf(withAlpha(accentGlow, (if (nightRed) 0.22f else 0.28f) * scrimP), Color.TRANSPARENT),
                     floatArrayOf(0f, 1f),
                     Shader.TileMode.CLAMP,
                 )
@@ -2208,7 +2561,17 @@ class ClockView @JvmOverloads constructor(
             canvas.drawRect(0f, 0f, w, h, haloPaint)
         }
 
-        // 3. Centered Liquid Glass Hero Notification Card
+        // 3. Centered Liquid Glass Hero Notification Card with iOS spring bloom
+        val cardAlpha = ((scrimP * 1.25f).coerceIn(0f, 1f) * 255f).toInt()
+        if (cardAlpha <= 2) return
+        val cardScale = 0.84f + 0.16f * springProgress
+        val cardDy = -h * 0.068f * (1f - springProgress)
+
+        layerBounds.set(0f, 0f, w, h)
+        val cardLayer = canvas.saveLayerAlpha(layerBounds, cardAlpha)
+        canvas.translate(0f, cardDy)
+        canvas.scale(cardScale, cardScale, w * 0.5f, h * 0.5f)
+
         val landscape = w >= h
         val cardW = if (landscape) min(w * 0.76f, h * 1.66f) else w * 0.90f
         val cardH = if (landscape) min(h * 0.58f, cardW * 0.44f) else min(h * 0.34f, w * 0.62f)
@@ -2236,7 +2599,6 @@ class ClockView @JvmOverloads constructor(
         val iconLeft = cardBox.left + padX
         val iconTop = cardBox.centerY - iconSize * 0.5f
 
-        // Giant iOS continuous squircle App Icon (or vibrant bell badge fallback)
         val appDrawable = loadAppIcon(alert.packageName)
         if (appDrawable != null) {
             drawSquircleAppIcon(canvas, appDrawable, iconLeft, iconTop, iconSize, nightRed)
@@ -2260,7 +2622,6 @@ class ClockView @JvmOverloads constructor(
             )
         }
 
-        // Right content column: App Name · now + oversized desk-legible Title / Tap-to-View shield
         val textLeft = iconLeft + iconSize + padX * 0.85f
         val textRight = cardBox.right - padX
         val availW = (textRight - textLeft).coerceAtLeast(1f)
@@ -2275,7 +2636,6 @@ class ClockView @JvmOverloads constructor(
             else -> Color.argb(165, 28, 28, 30)
         }
 
-        // Top metadata line: App Name · 刚刚  (+ optional "+N more" pill)
         val metaText = "${alert.appLabel}  ·  ${context.getString(R.string.notif_just_now)}"
         widgetSecondaryPaint.typeface = roundedBold
         widgetSecondaryPaint.textSize = (cardH * 0.095f).coerceIn(14f, 44f)
@@ -2309,9 +2669,10 @@ class ClockView @JvmOverloads constructor(
         val clippedMeta = TextUtils.ellipsize(metaText, widgetSecondaryPaint, metaAvail, TextUtils.TruncateAt.END).toString()
         canvas.drawText(clippedMeta, textLeft, metaY, widgetSecondaryPaint)
 
-        // Main Hero Body
+        // Main Hero Body (with smooth reveal bloom when transitioning from Tap-to-View)
+        val revealP = alertRevealProgress.coerceIn(0f, 1f)
+        val revealDy = cardH * 0.03f * (1f - revealP)
         if (alert.isMasked) {
-            // Iconic iOS StandBy Privacy Shield ("新通知" + frosted "轻点查看" capsule)
             widgetPrimaryPaint.typeface = roundedExtraBold
             widgetPrimaryPaint.textSize = (cardH * 0.175f).coerceIn(22f, 82f)
             widgetPrimaryPaint.color = primaryText
@@ -2343,9 +2704,8 @@ class ClockView @JvmOverloads constructor(
                 dateHeaderPaint.textAlign = Paint.Align.LEFT
             }
         } else {
-            // Unmasked Public Title: up to 2 bold lines, crisp & legible from across the room
             widgetPrimaryPaint.typeface = roundedExtraBold
-            widgetPrimaryPaint.color = primaryText
+            widgetPrimaryPaint.color = withAlpha(primaryText, revealP)
             val baseSize = (cardH * 0.165f).coerceIn(22f, 78f)
             widgetPrimaryPaint.textSize = baseSize
             val staticLayout = StaticLayout.Builder
@@ -2356,7 +2716,7 @@ class ClockView @JvmOverloads constructor(
                 .setIncludePad(false)
                 .setLineSpacing(0f, 1.12f)
                 .build()
-            val textTop = cardBox.top + cardH * 0.38f
+            val textTop = cardBox.top + cardH * 0.38f + revealDy
             canvas.save()
             canvas.translate(textLeft, textTop)
             staticLayout.draw(canvas)
@@ -2371,6 +2731,8 @@ class ClockView @JvmOverloads constructor(
         cardFillPaint.color = if (nightRed) Color.argb(82, 255, 69, 58) else if (darkSurface) Color.argb(64, 255, 255, 255) else Color.argb(46, 0, 0, 0)
         rectScratch.set(cardBox.centerX - barW * 0.5f, barY, cardBox.centerX + barW * 0.5f, barY + barH)
         canvas.drawRoundRect(rectScratch, barH * 0.5f, barH * 0.5f, cardFillPaint)
+
+        canvas.restoreToCount(cardLayer)
     }
 
     private fun drawSquircleAppIcon(
@@ -2428,7 +2790,8 @@ class ClockView @JvmOverloads constructor(
     // -------------------------------------------------------------------------
 
     private fun drawTransientIndicator(canvas: Canvas, w: Float, h: Float, nightRed: Boolean, darkSurface: Boolean) {
-        if (hintAlpha <= 0f) return
+        val alpha = hintAlpha.coerceIn(0f, 1f)
+        if (alpha <= 0.01f) return
         val banner = bannerText
         if (!banner.isNullOrEmpty()) {
             hintPaint.typeface = roundedBold
@@ -2437,23 +2800,28 @@ class ClockView @JvmOverloads constructor(
             val padX = hintPaint.textSize * 1.0f
             val pillH = hintPaint.textSize * 2.0f
             val pillW = tw + padX * 2f
-            val pillBox = FaceBox(w * 0.5f - pillW * 0.5f, h * 0.90f - pillH * 0.5f, w * 0.5f + pillW * 0.5f, h * 0.90f + pillH * 0.5f)
+            val riseDy = pillH * 0.35f * (1f - alpha)
+            val pillCy = h * 0.90f + riseDy
+            val pillBox = FaceBox(w * 0.5f - pillW * 0.5f, pillCy - pillH * 0.5f, w * 0.5f + pillW * 0.5f, pillCy + pillH * 0.5f)
+            layerBounds.set(pillBox.left - 8f, pillBox.top - 8f, pillBox.right + 8f, pillBox.bottom + 8f)
+            val bannerLayer = canvas.saveLayerAlpha(layerBounds, (alpha * 255f).toInt().coerceIn(0, 255))
             drawGlassCard(
                 canvas, pillBox, pillH * 0.5f,
                 if (nightRed) Color.argb(180, 35, 6, 6) else Color.argb(190, 28, 30, 36),
                 if (nightRed) Color.argb(195, 18, 2, 2) else Color.argb(210, 18, 19, 24),
                 nightRed, darkSurface,
             )
-            hintPaint.color = withAlpha(if (nightRed) Color.parseColor("#FF453A") else Color.WHITE, 0.94f * hintAlpha)
+            hintPaint.color = withAlpha(if (nightRed) Color.parseColor("#FF453A") else Color.WHITE, 0.94f)
             val y = pillBox.centerY - (hintPaint.ascent() + hintPaint.descent()) * 0.5f
             canvas.drawText(banner, pillBox.centerX, y, hintPaint)
+            canvas.restoreToCount(bannerLayer)
             return
         }
 
         val hint = hintText
         if (hint.isNullOrEmpty()) return
         hintPaint.typeface = roundedBold
-        hintPaint.color = withAlpha(if (nightRed) Color.parseColor("#FF453A") else colors.secondary, 0.52f * hintAlpha)
+        hintPaint.color = withAlpha(if (nightRed) Color.parseColor("#FF453A") else colors.secondary, 0.52f * alpha)
         hintPaint.textSize = (h * 0.022f).coerceIn(11f, 28f)
         canvas.drawText(hint, w * 0.5f, h * 0.962f, hintPaint)
     }
