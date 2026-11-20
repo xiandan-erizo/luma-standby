@@ -11,7 +11,10 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
+import android.view.VelocityTracker
+import android.view.ViewConfiguration
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.core.content.ContextCompat
@@ -79,7 +82,11 @@ class StandbyActivity : ComponentActivity() {
     private val headsUpSuppressor by lazy { HeadsUpSuppressor(this) }
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val returnToIdle = Runnable { applyRefreshIntent(baselineState()) }
+    private val returnToIdle = Runnable {
+        if (!clockView.hasActiveMotion()) {
+            applyRefreshIntent(baselineState())
+        }
+    }
     private val dismissAlertRunnable = Runnable { dismissNotificationAlert() }
 
     private var stopObservingBattery: (() -> Unit)? = null
@@ -88,6 +95,11 @@ class StandbyActivity : ComponentActivity() {
     private var lastTapAt = 0L
     private var touchDownX = 0f
     private var touchDownY = 0f
+    private var dragOriginX = 0f
+    private var dragOriginY = 0f
+    private var isTouchDragging = false
+    private var touchSlopPx = 16f
+    private var velocityTracker: VelocityTracker? = null
     private var touchDownOnUnreadPill = false
     private var touchDownOnLiveIsland = false
     private var swipeConsumed = false
@@ -124,6 +136,16 @@ class StandbyActivity : ComponentActivity() {
         clockView = ClockView(this)
         clockView.setBackgroundColor(Color.BLACK)
         setContentView(clockView)
+        touchSlopPx = ViewConfiguration.get(this).scaledTouchSlop.toFloat().coerceIn(14f, 36f)
+        clockView.onMotionActiveChanged = { moving ->
+            if (moving) {
+                mainHandler.removeCallbacks(returnToIdle)
+                applyRefreshIntent(RefreshState.INTERACTIVE)
+            } else {
+                mainHandler.removeCallbacks(returnToIdle)
+                mainHandler.postDelayed(returnToIdle, IDLE_TIMEOUT_MS)
+            }
+        }
 
         setShowWhenLocked(true)
         setTurnScreenOn(true)
@@ -211,6 +233,11 @@ class StandbyActivity : ComponentActivity() {
                 MotionEvent.ACTION_DOWN -> {
                     touchDownX = event.x
                     touchDownY = event.y
+                    dragOriginX = event.x
+                    dragOriginY = event.y
+                    isTouchDragging = false
+                    velocityTracker?.recycle()
+                    velocityTracker = VelocityTracker.obtain().also { it.addMovement(event) }
                     touchDownOnUnreadPill = activeAlert == null && expandedLiveActivity == null &&
                         clockView.hitTestUnreadPill(event.x, event.y)
                     touchDownOnLiveIsland = activeAlert == null && expandedLiveActivity == null &&
@@ -220,11 +247,18 @@ class StandbyActivity : ComponentActivity() {
                 }
 
                 MotionEvent.ACTION_MOVE -> {
+                    velocityTracker?.addMovement(event)
                     if (!touchDownOnUnreadPill && !touchDownOnLiveIsland) {
-                        val dx = event.x - touchDownX
-                        val dy = event.y - touchDownY
-                        if (abs(dx) > 12f || abs(dy) > 12f) {
-                            clockView.setInteractiveDrag(dx, dy)
+                        val rawDx = event.x - touchDownX
+                        val rawDy = event.y - touchDownY
+                        if (!isTouchDragging && (abs(rawDx) > touchSlopPx || abs(rawDy) > touchSlopPx)) {
+                            // Anchor drag origin at exact slop crossing for zero breakaway jump
+                            isTouchDragging = true
+                            dragOriginX = event.x
+                            dragOriginY = event.y
+                        }
+                        if (isTouchDragging) {
+                            clockView.setInteractiveDrag(event.x - dragOriginX, event.y - dragOriginY)
                         }
                     }
                 }
@@ -232,14 +266,29 @@ class StandbyActivity : ComponentActivity() {
                 MotionEvent.ACTION_CANCEL -> {
                     touchDownOnUnreadPill = false
                     touchDownOnLiveIsland = false
+                    isTouchDragging = false
+                    velocityTracker?.recycle()
+                    velocityTracker = null
                     clockView.releaseInteractiveDrag()
                 }
 
                 MotionEvent.ACTION_UP -> {
+                    velocityTracker?.addMovement(event)
+                    velocityTracker?.computeCurrentVelocity(1000, 6_000f)
+                    val vx = velocityTracker?.xVelocity ?: 0f
+                    val vy = velocityTracker?.yVelocity ?: 0f
+                    velocityTracker?.recycle()
+                    velocityTracker = null
+
                     val dx = event.x - touchDownX
                     val dy = event.y - touchDownY
                     val absDx = abs(dx)
                     val absDy = abs(dy)
+                    val absVx = abs(vx)
+                    val absVy = abs(vy)
+                    val wasDragging = isTouchDragging
+                    isTouchDragging = false
+
                     val currentAlert = activeAlert
                     val currentExpandedLive = expandedLiveActivity
                     val startedOnUnreadPill = touchDownOnUnreadPill
@@ -247,32 +296,49 @@ class StandbyActivity : ComponentActivity() {
                     touchDownOnUnreadPill = false
                     touchDownOnLiveIsland = false
 
+                    val horizontalSwipe = (absDx > SWIPE_THRESHOLD_PX || (absVx > FLICK_VELOCITY_PX && absDx > FLICK_MIN_DIST_PX)) &&
+                        absDx > absDy * 1.15f
+                    val verticalSwipe = (absDy > SWIPE_THRESHOLD_PX || (absVy > FLICK_VELOCITY_PX && absDy > FLICK_MIN_DIST_PX)) &&
+                        absDy > absDx * 1.15f
+                    val isTap = absDx < TAP_SLOP_PX && absDy < TAP_SLOP_PX && absVx < 420f && absVy < 420f
+
                     if (currentAlert != null) {
                         // Notification takeover is visible:
-                        // - Swipe left/right or tap "Clear" / "Clear N" permanently clears from Android shade.
-                        // - Swipe up or tap body tucks back into top pill (or reveals if Tap-to-View is on).
-                        // - Partial drag springs smoothly back to center.
-                        if (absDx > SWIPE_THRESHOLD_PX && absDx > absDy * 1.15f) {
+                        // - Swipe or quick flick left/right clears permanently with thumb velocity handoff.
+                        // - Swipe or quick flick up/down dissolves calmly back to clock.
+                        // - Partial drag springs smoothly back to center with exact release momentum.
+                        if (horizontalSwipe) {
                             swipeConsumed = true
                             lastTapAt = 0L
+                            tickHaptic()
                             clearCurrentNotification(
-                                if (dx > 0f) AlertExitMode.FLING_RIGHT else AlertExitMode.FLING_LEFT,
+                                exitMode = if (dx > 0f) AlertExitMode.FLING_RIGHT else AlertExitMode.FLING_LEFT,
+                                velocityX = vx,
+                                velocityY = vy,
                             )
-                        } else if (absDy > SWIPE_THRESHOLD_PX) {
+                        } else if (verticalSwipe) {
                             swipeConsumed = true
                             lastTapAt = 0L
-                            dismissNotificationAlert(AlertExitMode.TUCK_TO_PILL)
-                        } else if (absDx < TAP_SLOP_PX && absDy < TAP_SLOP_PX) {
-                            clockView.releaseInteractiveDrag()
+                            dismissNotificationAlert(AlertExitMode.TUCK_TO_PILL, vx, vy)
+                        } else if (isTap) {
+                            clockView.releaseInteractiveDrag(vx, vy)
                             lastTapAt = 0L
                             when {
-                                clockView.hitTestAlertClear(event.x, event.y) ->
+                                clockView.hitTestAlertClear(event.x, event.y) -> {
+                                    tickHaptic()
                                     clearCurrentNotification(AlertExitMode.CLEAR_DISSOLVE)
-                                clockView.hitTestAlertClearAll(event.x, event.y) ->
+                                }
+                                clockView.hitTestAlertClearAll(event.x, event.y) -> {
+                                    tickHaptic()
                                     clearAllNotifications(AlertExitMode.CLEAR_DISSOLVE)
-                                currentAlert.tapToReveal && !currentAlert.revealed && !currentAlert.isPrivateRedacted ->
+                                }
+                                currentAlert.tapToReveal && !currentAlert.revealed && !currentAlert.isPrivateRedacted -> {
+                                    tickHaptic()
                                     showNotificationAlert(currentAlert.copy(revealed = true))
+                                }
                                 clockView.canExpandAlertDetailNow() -> {
+                                    tickHaptic()
+                                    enterInteractive(flashHint = false)
                                     clockView.expandAlertDetailNow()
                                     mainHandler.removeCallbacks(dismissAlertRunnable)
                                     mainHandler.postDelayed(dismissAlertRunnable, ALERT_VISIBLE_MS)
@@ -281,73 +347,83 @@ class StandbyActivity : ComponentActivity() {
                                     dismissNotificationAlert(AlertExitMode.TUCK_TO_PILL)
                             }
                         } else {
-                            clockView.releaseInteractiveDrag()
+                            clockView.releaseInteractiveDrag(vx, vy)
                         }
                     } else if (currentExpandedLive != null) {
-                        // Expanded Dynamic Island / Super Island card:
-                        // - Swipe left/right cycles between active islands (or collapses if single).
-                        // - Swipe up or tap collapses smoothly back into top Dynamic Island pill.
-                        if (absDx > SWIPE_THRESHOLD_PX && absDx > absDy * 1.15f) {
+                        if (horizontalSwipe) {
                             swipeConsumed = true
                             lastTapAt = 0L
-                            clockView.releaseInteractiveDrag()
+                            clockView.releaseInteractiveDrag(vx, vy)
+                            tickHaptic()
                             if (liveActivities.size > 1) {
                                 cycleLiveActivity(step = if (dx < 0f) 1 else -1, keepExpanded = true)
                             } else {
                                 collapseLiveActivity()
                             }
-                        } else if (absDy > SWIPE_THRESHOLD_PX) {
+                        } else if (verticalSwipe) {
                             swipeConsumed = true
                             lastTapAt = 0L
                             collapseLiveActivity()
-                        } else if (absDx < TAP_SLOP_PX && absDy < TAP_SLOP_PX) {
-                            clockView.releaseInteractiveDrag()
+                        } else if (isTap) {
+                            clockView.releaseInteractiveDrag(vx, vy)
                             lastTapAt = 0L
                             when {
-                                clockView.hitTestLiveCardCycle(event.x, event.y) ->
+                                clockView.hitTestLiveCardCycle(event.x, event.y) -> {
+                                    tickHaptic()
                                     cycleLiveActivity(step = 1, keepExpanded = true)
-                                clockView.hitTestLiveCardCollapse(event.x, event.y) ->
+                                }
+                                clockView.hitTestLiveCardCollapse(event.x, event.y) -> {
+                                    tickHaptic()
                                     collapseLiveActivity()
+                                }
                                 else ->
                                     collapseLiveActivity()
                             }
                         } else {
-                            clockView.releaseInteractiveDrag()
+                            clockView.releaseInteractiveDrag(vx, vy)
                         }
                     } else if (startedOnLiveIsland) {
                         lastTapAt = 0L
-                        if (absDx > SWIPE_THRESHOLD_PX && liveActivities.size > 1) {
+                        if (horizontalSwipe && liveActivities.size > 1) {
                             swipeConsumed = true
+                            tickHaptic()
                             cycleLiveActivity(step = if (dx < 0f) 1 else -1, keepExpanded = false)
-                        } else if (absDx < TAP_SLOP_PX && absDy < TAP_SLOP_PX) {
+                        } else if (isTap) {
+                            tickHaptic()
                             expandCurrentLiveActivity()
                         }
                     } else if (startedOnUnreadPill) {
                         lastTapAt = 0L
-                        if (absDx > SWIPE_THRESHOLD_PX || absDy > SWIPE_THRESHOLD_PX) {
+                        if (horizontalSwipe || verticalSwipe) {
                             swipeConsumed = true
+                            tickHaptic()
                             clearAllNotifications(AlertExitMode.CLEAR_DISSOLVE)
                             clockView.flashBanner(getString(R.string.notif_cleared_banner))
-                        } else if (absDx < TAP_SLOP_PX && absDy < TAP_SLOP_PX) {
+                        } else if (isTap) {
+                            tickHaptic()
                             openLatestNotificationAlert()
                         }
-                    } else if (absDy > SWIPE_THRESHOLD_PX && absDy > absDx * 1.35f) {
+                    } else if (verticalSwipe && absDy > absDx * 1.25f) {
                         swipeConsumed = true
                         lastTapAt = 0L
-                        cycleFaceStyle(step = if (dy < 0f) 1 else -1)
-                    } else if (absDx > SWIPE_THRESHOLD_PX && absDx > absDy * 1.35f) {
+                        tickHaptic()
+                        cycleFaceStyle(step = if (dy < 0f) 1 else -1, velocityX = vx, velocityY = vy)
+                    } else if (horizontalSwipe && absDx > absDy * 1.25f) {
                         swipeConsumed = true
                         lastTapAt = 0L
-                        cycleIosPalette(step = if (dx < 0f) 1 else -1)
-                    } else if (!swipeConsumed && absDx < TAP_SLOP_PX && absDy < TAP_SLOP_PX) {
-                        clockView.releaseInteractiveDrag()
+                        tickHaptic()
+                        cycleIosPalette(step = if (dx < 0f) 1 else -1, velocityX = vx, velocityY = vy)
+                    } else if (!swipeConsumed && isTap) {
+                        clockView.releaseInteractiveDrag(vx, vy)
                         when {
                             clockView.hitTestLiveIslandPill(event.x, event.y) -> {
                                 lastTapAt = 0L
+                                tickHaptic()
                                 expandCurrentLiveActivity()
                             }
                             clockView.hitTestUnreadPill(event.x, event.y) -> {
                                 lastTapAt = 0L
+                                tickHaptic()
                                 openLatestNotificationAlert()
                             }
                             else -> {
@@ -363,7 +439,7 @@ class StandbyActivity : ComponentActivity() {
                             }
                         }
                     } else {
-                        clockView.releaseInteractiveDrag()
+                        clockView.releaseInteractiveDrag(vx, vy)
                     }
                 }
             }
@@ -413,6 +489,8 @@ class StandbyActivity : ComponentActivity() {
     override fun onDestroy() {
         mainHandler.removeCallbacks(returnToIdle)
         mainHandler.removeCallbacks(dismissAlertRunnable)
+        velocityTracker?.recycle()
+        velocityTracker = null
         headsUpSuppressor.restore()
         stopObservingMedia?.invoke()
         stopObservingMedia = null
@@ -590,14 +668,15 @@ class StandbyActivity : ComponentActivity() {
 
     private fun expandCurrentLiveActivity() {
         val target = liveActivities.getOrNull(selectedLiveIndex) ?: liveActivities.firstOrNull() ?: return
+        enterInteractive(flashHint = false)
         dismissNotificationAlert(AlertExitMode.TUCK_TO_PILL)
         expandedLiveActivity = target
         clockView.setExpandedLiveActivity(target)
-        enterInteractive(flashHint = false)
     }
 
     private fun collapseLiveActivity() {
         if (expandedLiveActivity != null) {
+            enterInteractive(flashHint = false)
             expandedLiveActivity = null
             clockView.setExpandedLiveActivity(null)
         }
@@ -640,23 +719,33 @@ class StandbyActivity : ComponentActivity() {
     }
 
     private fun showNotificationAlert(alert: StandbyNotificationAlert) {
+        // Pre-warm 120Hz LTPO BEFORE starting the alert animation so frame 1 never drops!
+        enterInteractive(flashHint = false)
         collapseLiveActivity()
         activeAlert = alert
         clockView.setActiveAlert(alert)
-        enterInteractive(flashHint = false)
         mainHandler.removeCallbacks(dismissAlertRunnable)
         mainHandler.postDelayed(dismissAlertRunnable, ALERT_VISIBLE_MS)
     }
 
-    private fun dismissNotificationAlert(exitMode: AlertExitMode = AlertExitMode.TUCK_TO_PILL) {
+    private fun dismissNotificationAlert(
+        exitMode: AlertExitMode = AlertExitMode.TUCK_TO_PILL,
+        velocityX: Float = 0f,
+        velocityY: Float = 0f,
+    ) {
         mainHandler.removeCallbacks(dismissAlertRunnable)
         if (activeAlert != null) {
+            enterInteractive(flashHint = false)
             activeAlert = null
-            clockView.setActiveAlert(null, exitMode)
+            clockView.setActiveAlert(null, exitMode, velocityX, velocityY)
         }
     }
 
-    private fun clearCurrentNotification(exitMode: AlertExitMode) {
+    private fun clearCurrentNotification(
+        exitMode: AlertExitMode,
+        velocityX: Float = 0f,
+        velocityY: Float = 0f,
+    ) {
         val current = activeAlert ?: return
         val key = current.key
         if (!key.isNullOrBlank()) {
@@ -672,7 +761,7 @@ class StandbyActivity : ComponentActivity() {
         clockView.setUnreadSummary(
             nextTop?.let { UnreadNotificationSummary(it.appLabel, it.packageName, remaining.size) },
         )
-        dismissNotificationAlert(exitMode)
+        dismissNotificationAlert(exitMode, velocityX, velocityY)
     }
 
     private fun clearAllNotifications(exitMode: AlertExitMode) {
@@ -702,7 +791,12 @@ class StandbyActivity : ComponentActivity() {
         mainHandler.postDelayed(returnToIdle, IDLE_TIMEOUT_MS)
     }
 
-    private fun cycleFaceStyle(step: Int) {
+    /** Feather-light X-axis linear motor micro-tick on direct user gestures (never on passive alerts). */
+    private fun tickHaptic() {
+        runCatching { clockView.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK) }
+    }
+
+    private fun cycleFaceStyle(step: Int, velocityX: Float = 0f, velocityY: Float = 0f) {
         val styles = FaceStyle.entries
         val currentStyle = settings.currentTheme().faceStyle
         val idx = styles.indexOf(currentStyle).coerceAtLeast(0)
@@ -716,7 +810,7 @@ class StandbyActivity : ComponentActivity() {
                 FaceStyle.POSTER -> R.string.style_poster
             },
         )
-        clockView.prepareTransition(directionX = 0, directionY = step)
+        clockView.prepareTransition(directionX = 0, directionY = step, velocityX = velocityX, velocityY = velocityY)
         clockView.flashBanner(label)
         lifecycleScope.launch {
             repository.update { current ->
@@ -726,7 +820,7 @@ class StandbyActivity : ComponentActivity() {
         }
     }
 
-    private fun cycleIosPalette(step: Int) {
+    private fun cycleIosPalette(step: Int, velocityX: Float = 0f, velocityY: Float = 0f) {
         val currentTheme = settings.currentTheme()
         val palettes = if (currentTheme.faceStyle == FaceStyle.POSTER) {
             PalettePresets.groupPoster
@@ -739,7 +833,7 @@ class StandbyActivity : ComponentActivity() {
                 it.accent.equals(currentTheme.accent, ignoreCase = true)
         }.let { if (it < 0) 0 else it }
         val nextPalette = palettes[(idx + step + palettes.size) % palettes.size]
-        clockView.prepareTransition(directionX = step, directionY = 0)
+        clockView.prepareTransition(directionX = step, directionY = 0, velocityX = velocityX, velocityY = velocityY)
         clockView.flashBanner(nextPalette.name)
         lifecycleScope.launch {
             repository.update { current ->
@@ -757,13 +851,18 @@ class StandbyActivity : ComponentActivity() {
     }
 
     private fun applyRefreshIntent(state: RefreshState) {
+        val effectiveState = if (::clockView.isInitialized && clockView.hasActiveMotion()) {
+            RefreshState.INTERACTIVE
+        } else {
+            state
+        }
         val powerSave = powerController.isPowerSaveMode()
         val showSeconds = if (powerSave) {
             false
         } else {
             settings.showSeconds ?: settings.currentTheme().showSeconds
         }
-        val intent = RefreshRatePolicy.intentFor(state, showSeconds)
+        val intent = RefreshRatePolicy.intentFor(effectiveState, showSeconds)
         RefreshRatePolicy.apply(window, displayController, intent)
 
         runCatching {
@@ -791,7 +890,9 @@ class StandbyActivity : ComponentActivity() {
         const val IDLE_TIMEOUT_MS = 8_000L
         const val ALERT_VISIBLE_MS = 7_500L
         const val DOUBLE_TAP_WINDOW_MS = 600L
-        const val SWIPE_THRESHOLD_PX = 96f
+        const val SWIPE_THRESHOLD_PX = 92f
+        const val FLICK_VELOCITY_PX = 680f
+        const val FLICK_MIN_DIST_PX = 34f
         const val TAP_SLOP_PX = 56f
     }
 }

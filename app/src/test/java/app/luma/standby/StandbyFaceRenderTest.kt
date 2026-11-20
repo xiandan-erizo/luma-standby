@@ -530,6 +530,29 @@ class StandbyFaceRenderTest {
         assertTrue("Stage 2 borderless detail notification renders visibly", countNonBlack(stage2Bmp) > 80_000)
     }
 
+    @Test
+    fun appleSpringHasZeroFrame1KickAndInheritsReleaseVelocity() {
+        // 1. Zero frame-1 velocity cliff: at t = 0.01, physical spring displacement stays tiny (< 0.015),
+        //    unlike easeOutCubic (~0.03) or steep Bezier (~0.045).
+        assertEquals(0f, app.luma.standby.ui.clock.AppleSpring.evaluate(0f, 0.52f, 0.44f, 0.94f), 0.0001f)
+        assertEquals(1f, app.luma.standby.ui.clock.AppleSpring.evaluate(1f, 0.52f, 0.44f, 0.94f), 0.0001f)
+        val early = app.luma.standby.ui.clock.AppleSpring.evaluate(0.01f, 0.52f, 0.44f, 0.94f)
+        assertTrue("Spring starts smoothly from rest without frame-1 kick (was $early)", early in 0.0001f..0.015f)
+
+        // 2. Cancelled drag with outward thumb velocity coasts briefly in thumb direction before settling to 0.
+        val x0 = 60f
+        val coast = app.luma.standby.ui.clock.AppleSpring.settleDisplacement(0.02f, x0 = x0, v0 = 900f)
+        val settled = app.luma.standby.ui.clock.AppleSpring.settleDisplacement(0.60f, x0 = x0, v0 = 900f)
+        assertTrue("Positive release velocity carries momentum smoothly past x0 ($coast > $x0)", coast > x0)
+        assertTrue("Spring settles smoothly back near 0 ($settled)", kotlin.math.abs(settled) < 3f)
+
+        // 3. Velocity-preserving glide lands cleanly on target and moves faster early with thumb assist.
+        val slowMid = app.luma.standby.ui.clock.AppleSpring.glideWithVelocity(0.25f, 0.34f, 0f, 500f, v0 = 0f)
+        val fastMid = app.luma.standby.ui.clock.AppleSpring.glideWithVelocity(0.25f, 0.34f, 0f, 500f, v0 = 2_400f)
+        assertTrue("Fast flick advances further early ($fastMid > $slowMid)", fastMid > slowMid + 30f)
+        assertEquals(500f, app.luma.standby.ui.clock.AppleSpring.glideWithVelocity(1f, 0.34f, 0f, 500f, v0 = 2_400f), 0.01f)
+    }
+
     private fun renderClock(
         width: Int,
         height: Int,

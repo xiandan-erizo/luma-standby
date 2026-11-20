@@ -29,6 +29,7 @@ import android.graphics.SweepGradient
 import android.graphics.Typeface
 import android.graphics.drawable.AdaptiveIconDrawable
 import android.graphics.drawable.Drawable
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.text.Layout
@@ -145,11 +146,18 @@ class ClockView @JvmOverloads constructor(
     private val iosSansMedium: Typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
     private val iosSansRegular: Typeface = Typeface.create("sans-serif", Typeface.NORMAL)
 
-    // Real GPU Gaussian blur layer (API 31+) + tiny software-blur scratch buffer for non-HW surfaces.
-    private val backdropRenderNode = RenderNode("luma_clock_backdrop")
+    // Pre-baked dual-depth GPU Gaussian blur layers (API 31+) — zero per-frame blur recomputation,
+    // zero Skia mipmap stepping pops, dead-locked 120fps optical defocus + software fallback.
+    private val midBlurNode = RenderNode("luma_clock_blur_mid")
+    private val deepBlurNode = RenderNode("luma_clock_blur_deep")
+    private var blurCacheKey: String? = null
     private var softBlurBitmap: Bitmap? = null
     private var softBlurCanvas: Canvas? = null
     private val superellipsePath = Path()
+    private val envFoldPath = Path()
+    private val envFlapPath = Path()
+    private var cachedAlertBodyKey: String? = null
+    private var cachedAlertBodyLayout: StaticLayout? = null
 
     private var theme: LumaTheme = ThemePresets.iosFloatBlue
     private var colors: ResolvedColors = theme.resolveColors()
@@ -210,12 +218,20 @@ class ClockView @JvmOverloads constructor(
     private val iosEaseOut = PathInterpolator(0.16f, 1.0f, 0.30f, 1.0f)
     private val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
 
-    // Master choreographed notification timeline (0..1 linear; sub-beats evaluate custom springs).
+    // Master choreographed notification timeline (0..1 linear; sub-beats evaluate AppleSpring physics).
     private var alertTimeline: Float = 0f
     private var alertExiting: Boolean = false
     private var alertExitMode: AlertExitMode = AlertExitMode.TUCK_TO_PILL
     private var alertExitStartDragX: Float = 0f
     private var alertExitStartDragY: Float = 0f
+    private var alertExitVelocityX: Float = 0f
+    private var alertExitVelocityY: Float = 0f
+    private var alertExitStartScrimP: Float = 1f
+    private var alertExitStartAlpha: Float = 1f
+    private var alertExitStartScale: Float = 1f
+    private var lastAlertScrimP: Float = 0f
+    private var lastAlertAlpha: Float = 0f
+    private var lastAlertScale: Float = 1f
     private var alertRevealProgress: Float = 1f
     private var alertDetailProgress: Float = 0f
     private var alertAnimator: ValueAnimator? = null
@@ -227,10 +243,13 @@ class ClockView @JvmOverloads constructor(
 
     private var hintAnimator: ValueAnimator? = null
 
-    // Live finger-following drag & smooth spring-back / face-switch momentum
+    // Live finger-following drag with single-decision axis lock & velocity-inheriting spring release
     private var dragOffsetX: Float = 0f
     private var dragOffsetY: Float = 0f
+    private var dragLockedAxis: Int = 0 // 0 = unlocked, 1 = horizontal, 2 = vertical
+    private var isInteractiveDragging: Boolean = false
     private var dragReturnAnimator: ValueAnimator? = null
+    private var lastMotionActive: Boolean = false
 
     private var outgoingBitmap: Bitmap? = null
     private var transitionProgress: Float = 1f
@@ -238,12 +257,17 @@ class ClockView @JvmOverloads constructor(
     private var transitionDirY: Int = 0
     private var transitionStartOffsetX: Float = 0f
     private var transitionStartOffsetY: Float = 0f
+    private var transitionStartVelocityX: Float = 0f
+    private var transitionStartVelocityY: Float = 0f
     private var transitionArmed: Boolean = false
     private var transitionAnimator: ValueAnimator? = null
     private var capturingSnapshot: Boolean = false
 
     /** Called once per redraw, before the frame is drawn. */
     var onTick: (() -> Unit)? = null
+
+    /** Notifies StandbyActivity whenever finite animations/drags start or finish so LTPO stays at 120Hz. */
+    var onMotionActiveChanged: ((Boolean) -> Unit)? = null
 
     private val scheduler = MinuteScheduler {
         onTick?.invoke()
@@ -314,94 +338,119 @@ class ClockView @JvmOverloads constructor(
     }
 
     /**
-     * Live interactive finger-following drag with soft rubber-band resistance so the
-     * clock face or notification card feels physically attached to the user's touch.
+     * Live interactive finger-following drag with single-decision axis locking and soft
+     * rubber-band resistance (slop-subtracted by caller so there is zero breakaway jump).
      */
     fun setInteractiveDrag(rawDx: Float, rawDy: Float) {
         if (!shouldAnimate()) return
         dragReturnAnimator?.cancel()
+        if (!isInteractiveDragging) {
+            isInteractiveDragging = true
+            syncMotionFrameRate()
+        }
         val w = width.toFloat().coerceAtLeast(1f)
         val h = height.toFloat().coerceAtLeast(1f)
+        val absX = abs(rawDx)
+        val absY = abs(rawDy)
+        // Lock axis once cleanly on initial movement so diagonal thumb drift never snaps mid-drag
+        if (dragLockedAxis == 0 && (absX > 6f || absY > 6f)) {
+            dragLockedAxis = if (absX > absY * 1.12f) 1 else 2
+        }
+
         if (activeAlert != null) {
-            val absX = kotlin.math.abs(rawDx)
-            val absY = kotlin.math.abs(rawDy)
-            if (absX > absY * 1.15f) {
-                // Horizontal swipe-to-clear glides freely with subtle softening far out
+            if (dragLockedAxis == 1) {
                 dragOffsetX = rubberBand(rawDx, w * 0.56f)
-                dragOffsetY = rubberBand(rawDy * 0.22f, h * 0.06f)
+                dragOffsetY = rubberBand(rawDy * 0.16f, h * 0.045f)
             } else {
-                // Vertical drag previews tucking back up into the top unread pill
-                dragOffsetX = rubberBand(rawDx * 0.25f, w * 0.08f)
+                dragOffsetX = rubberBand(rawDx * 0.18f, w * 0.06f)
                 dragOffsetY = rubberBand(rawDy, h * 0.28f)
             }
         } else if (expandedLiveActivity != null) {
-            val absX = kotlin.math.abs(rawDx)
-            val absY = kotlin.math.abs(rawDy)
-            if (absX > absY * 1.15f && liveActivities.size > 1) {
+            if (dragLockedAxis == 1 && liveActivities.size > 1) {
                 dragOffsetX = rubberBand(rawDx, w * 0.26f)
-                dragOffsetY = rubberBand(rawDy * 0.18f, h * 0.05f)
+                dragOffsetY = rubberBand(rawDy * 0.14f, h * 0.04f)
             } else {
-                dragOffsetX = rubberBand(rawDx * 0.20f, w * 0.07f)
+                dragOffsetX = rubberBand(rawDx * 0.16f, w * 0.055f)
                 dragOffsetY = rubberBand(rawDy, h * 0.28f)
             }
         } else {
-            // Lock subtly toward dominant drag axis for clean iOS horizontal/vertical feel
-            val absX = kotlin.math.abs(rawDx)
-            val absY = kotlin.math.abs(rawDy)
-            if (absY >= absX) {
-                dragOffsetX = rubberBand(rawDx * 0.18f, w * 0.04f)
+            if (dragLockedAxis == 2) {
+                dragOffsetX = rubberBand(rawDx * 0.12f, w * 0.032f)
                 dragOffsetY = rubberBand(rawDy, h * 0.22f)
             } else {
                 dragOffsetX = rubberBand(rawDx, w * 0.20f)
-                dragOffsetY = rubberBand(rawDy * 0.18f, h * 0.04f)
+                dragOffsetY = rubberBand(rawDy * 0.12f, h * 0.032f)
             }
         }
         invalidate()
     }
 
-    /** Springs the clock face or notification card smoothly back to center on cancelled drag. */
-    fun releaseInteractiveDrag() {
-        if (kotlin.math.abs(dragOffsetX) < 0.5f && kotlin.math.abs(dragOffsetY) < 0.5f) {
+    /**
+     * Springs the clock face or notification smoothly back to center on cancelled drag,
+     * inheriting the finger's exact release velocity ([velocityX], [velocityY] in px/s).
+     */
+    fun releaseInteractiveDrag(velocityX: Float = 0f, velocityY: Float = 0f) {
+        dragLockedAxis = 0
+        isInteractiveDragging = false
+        if (abs(dragOffsetX) < 0.5f && abs(dragOffsetY) < 0.5f) {
             dragOffsetX = 0f
             dragOffsetY = 0f
+            syncMotionFrameRate()
             return
         }
         if (!shouldAnimate()) {
             dragOffsetX = 0f
             dragOffsetY = 0f
+            syncMotionFrameRate()
             invalidate()
             return
         }
         val startX = dragOffsetX
         val startY = dragOffsetY
+        // Scale down raw finger velocity softly to match the rubber-banded displacement space
+        val vX = (velocityX * 0.45f).coerceIn(-2_200f, 2_200f)
+        val vY = (velocityY * 0.45f).coerceIn(-2_200f, 2_200f)
+        val durationMs = 460L
+        val durationSec = durationMs / 1000f
         dragReturnAnimator?.cancel()
         dragReturnAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 400L
+            duration = durationMs
             interpolator = linearInterpolator
             addUpdateListener {
-                val p = springCurve(it.animatedValue as Float, damping = 0.78f, frequency = 1.65f)
-                dragOffsetX = startX * (1f - p)
-                dragOffsetY = startY * (1f - p)
+                val f = it.animatedValue as Float
+                val tSec = f * durationSec
+                val tail = 1f - f * f * f // smoothly zeroes tiny residual by end
+                dragOffsetX = AppleSpring.settleDisplacement(tSec, startX, vX, responseSec = 0.42f, dampingRatio = 0.88f) * tail
+                dragOffsetY = AppleSpring.settleDisplacement(tSec, startY, vY, responseSec = 0.42f, dampingRatio = 0.88f) * tail
                 invalidate()
             }
             addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
                     dragOffsetX = 0f
                     dragOffsetY = 0f
+                    syncMotionFrameRate()
                     invalidate()
                 }
             })
             start()
         }
+        syncMotionFrameRate()
     }
 
     /**
      * Captures a lightweight snapshot of the outgoing face right before a vertical
      * face switch or horizontal palette switch, continuing seamlessly from the user's
-     * current interactive drag offset.
+     * current interactive drag offset & release velocity.
      */
-    fun prepareTransition(directionX: Int, directionY: Int) {
+    fun prepareTransition(
+        directionX: Int,
+        directionY: Int,
+        velocityX: Float = 0f,
+        velocityY: Float = 0f,
+    ) {
         dragReturnAnimator?.cancel()
+        dragLockedAxis = 0
+        isInteractiveDragging = false
         val capturedDragX = dragOffsetX
         val capturedDragY = dragOffsetY
         dragOffsetX = 0f
@@ -409,6 +458,7 @@ class ClockView @JvmOverloads constructor(
 
         if (!shouldAnimate() || width <= 0 || height <= 0) {
             releaseOutgoingBitmap()
+            syncMotionFrameRate()
             return
         }
         transitionAnimator?.cancel()
@@ -432,6 +482,8 @@ class ClockView @JvmOverloads constructor(
         transitionDirY = directionY
         transitionStartOffsetX = capturedDragX
         transitionStartOffsetY = capturedDragY
+        transitionStartVelocityX = velocityX.coerceIn(-3_800f, 3_800f)
+        transitionStartVelocityY = velocityY.coerceIn(-3_800f, 3_800f)
         transitionProgress = 0f
         transitionArmed = snap != null
     }
@@ -465,11 +517,15 @@ class ClockView @JvmOverloads constructor(
     fun setActiveAlert(
         alert: StandbyNotificationAlert?,
         exitMode: AlertExitMode = AlertExitMode.TUCK_TO_PILL,
+        exitVelocityX: Float = 0f,
+        exitVelocityY: Float = 0f,
     ) {
         if (alert == activeAlert) return
         val previous = activeAlert
         activeAlert = alert
         dragReturnAnimator?.cancel()
+        dragLockedAxis = 0
+        isInteractiveDragging = false
         hintHandler.removeCallbacks(autoExpandAlertDetail)
 
         if (alert != null) {
@@ -491,6 +547,7 @@ class ClockView @JvmOverloads constructor(
                 if (!alert.expandImmediately && !isRevealUpdate && alert.hasDetailPreview) {
                     hintHandler.postDelayed(autoExpandAlertDetail, ALERT_HERO_DWELL_MS)
                 }
+                syncMotionFrameRate()
                 invalidate()
                 return
             }
@@ -503,14 +560,20 @@ class ClockView @JvmOverloads constructor(
                 } else {
                     alertRevealProgress = 0f
                     alertRevealAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-                        duration = 320L
-                        interpolator = iosFluidEase
+                        duration = 340L
+                        interpolator = linearInterpolator
                         addUpdateListener {
-                            alertRevealProgress = it.animatedValue as Float
+                            alertRevealProgress = AppleSpring.smootherstep(it.animatedValue as Float)
                             invalidate()
                         }
+                        addListener(object : AnimatorListenerAdapter() {
+                            override fun onAnimationEnd(animation: Animator) {
+                                syncMotionFrameRate()
+                            }
+                        })
                         start()
                     }
+                    syncMotionFrameRate()
                 }
             } else {
                 alertRevealAnimator?.cancel()
@@ -529,6 +592,12 @@ class ClockView @JvmOverloads constructor(
             alertExitMode = exitMode
             alertExitStartDragX = dragOffsetX
             alertExitStartDragY = dragOffsetY
+            alertExitVelocityX = exitVelocityX.coerceIn(-4_500f, 4_500f)
+            alertExitVelocityY = exitVelocityY.coerceIn(-4_500f, 4_500f)
+            // Capture exact live visual state so mid-entrance interrupts dissolve seamlessly (zero teleport!)
+            alertExitStartScrimP = if (lastAlertScrimP > 0.01f) lastAlertScrimP else 1f
+            alertExitStartAlpha = if (lastAlertAlpha > 0.01f) lastAlertAlpha else 1f
+            alertExitStartScale = lastAlertScale.coerceIn(0.86f, 1.04f)
             dragOffsetX = 0f
             dragOffsetY = 0f
             if (!shouldAnimate() || renderedAlert == null) {
@@ -539,6 +608,13 @@ class ClockView @JvmOverloads constructor(
                 alertTimeline = 0f
                 alertRevealProgress = 1f
                 alertDetailProgress = 0f
+                lastAlertScrimP = 0f
+                lastAlertAlpha = 0f
+                lastAlertScale = 1f
+                cachedAlertBodyKey = null
+                cachedAlertBodyLayout = null
+                invalidateBlurCache()
+                syncMotionFrameRate()
                 invalidate()
                 return
             }
@@ -740,8 +816,13 @@ class ClockView @JvmOverloads constructor(
         alertTimeline = 0f
         alertRevealProgress = 1f
         alertDetailProgress = 0f
+        lastAlertScrimP = 0f
+        lastAlertAlpha = 0f
+        lastAlertScale = 1f
+        cachedAlertBodyKey = null
+        cachedAlertBodyLayout = null
         hintHandler.removeCallbacks(autoExpandAlertDetail)
-        backdropRenderNode.setRenderEffect(null)
+        invalidateBlurCache()
         unreadPillProgress = 0f
         livePillProgress = 0f
         liveSheenProgress = 0f
@@ -749,6 +830,8 @@ class ClockView @JvmOverloads constructor(
         liveExpandExiting = false
         dragOffsetX = 0f
         dragOffsetY = 0f
+        dragLockedAxis = 0
+        isInteractiveDragging = false
         unreadPillBounds.setEmpty()
         alertClearBounds.setEmpty()
         alertClearAllBounds.setEmpty()
@@ -756,6 +839,7 @@ class ClockView @JvmOverloads constructor(
         liveCardCollapseBounds.setEmpty()
         liveCardCycleBounds.setEmpty()
         appIconCache.clear()
+        syncMotionFrameRate()
         invalidate()
     }
 
@@ -784,14 +868,54 @@ class ClockView @JvmOverloads constructor(
         hintHandler.removeCallbacks(autoExpandAlertDetail)
         cancelAllAnimations()
         unregisterTimeReceiver()
-        backdropRenderNode.setRenderEffect(null)
+        invalidateBlurCache()
         releaseSoftBlurBitmap()
+        cachedAlertBodyKey = null
+        cachedAlertBodyLayout = null
         appIconCache.clear()
         super.onDetachedFromWindow()
     }
 
     private fun shouldAnimate(): Boolean =
         animationsEnabled && isAttachedToWindow && ValueAnimator.areAnimatorsEnabled()
+
+    /** True whenever any finite motion or finger drag is active (keeps LTPO locked at 120Hz). */
+    fun hasActiveMotion(): Boolean =
+        isInteractiveDragging ||
+            alertAnimator?.isRunning == true ||
+            alertRevealAnimator?.isRunning == true ||
+            alertDetailAnimator?.isRunning == true ||
+            unreadPillAnimator?.isRunning == true ||
+            livePillAnimator?.isRunning == true ||
+            liveSheenAnimator?.isRunning == true ||
+            liveExpandAnimator?.isRunning == true ||
+            hintAnimator?.isRunning == true ||
+            dragReturnAnimator?.isRunning == true ||
+            transitionAnimator?.isRunning == true
+
+    private fun syncMotionFrameRate() {
+        val active = hasActiveMotion()
+        if (active != lastMotionActive) {
+            lastMotionActive = active
+            if (Build.VERSION.SDK_INT >= 35) {
+                runCatching {
+                    setRequestedFrameRate(
+                        if (active) View.REQUESTED_FRAME_RATE_CATEGORY_HIGH
+                        else View.REQUESTED_FRAME_RATE_CATEGORY_DEFAULT,
+                    )
+                }
+            }
+            onMotionActiveChanged?.invoke(active)
+        }
+    }
+
+    private fun invalidateBlurCache() {
+        if (blurCacheKey != null) {
+            midBlurNode.setRenderEffect(null)
+            deepBlurNode.setRenderEffect(null)
+            blurCacheKey = null
+        }
+    }
 
     private fun cancelAllAnimations() {
         hintHandler.removeCallbacks(autoExpandAlertDetail)
@@ -809,7 +933,10 @@ class ClockView @JvmOverloads constructor(
         transitionProgress = 1f
         dragOffsetX = 0f
         dragOffsetY = 0f
+        dragLockedAxis = 0
+        isInteractiveDragging = false
         releaseOutgoingBitmap()
+        syncMotionFrameRate()
     }
 
     private fun releaseSoftBlurBitmap() {
@@ -828,10 +955,11 @@ class ClockView @JvmOverloads constructor(
         if (!shouldAnimate() || outgoingBitmap == null) {
             transitionProgress = 1f
             releaseOutgoingBitmap()
+            syncMotionFrameRate()
             invalidate()
             return
         }
-        val durationMs = if (transitionDirY != 0) 580L else 500L
+        val durationMs = if (transitionDirY != 0) 540L else 480L
         transitionProgress = 0f
         transitionAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = durationMs
@@ -845,12 +973,16 @@ class ClockView @JvmOverloads constructor(
                     transitionProgress = 1f
                     transitionStartOffsetX = 0f
                     transitionStartOffsetY = 0f
+                    transitionStartVelocityX = 0f
+                    transitionStartVelocityY = 0f
                     releaseOutgoingBitmap()
+                    syncMotionFrameRate()
                     invalidate()
                 }
             })
             start()
         }
+        syncMotionFrameRate()
     }
 
     private fun animateAlertTransition(entering: Boolean) {
@@ -859,13 +991,13 @@ class ClockView @JvmOverloads constructor(
         alertTimeline = 0f
 
         val exitDuration = when (alertExitMode) {
-            AlertExitMode.TUCK_TO_PILL -> 340L
-            AlertExitMode.CLEAR_DISSOLVE -> 300L
+            AlertExitMode.TUCK_TO_PILL -> 360L
+            AlertExitMode.CLEAR_DISSOLVE -> 320L
             AlertExitMode.FLING_LEFT,
-            AlertExitMode.FLING_RIGHT -> 320L
+            AlertExitMode.FLING_RIGHT -> 340L
         }
         alertAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = if (entering) 460L else exitDuration
+            duration = if (entering) 520L else exitDuration
             interpolator = linearInterpolator
             addUpdateListener {
                 alertTimeline = it.animatedValue as Float
@@ -880,30 +1012,53 @@ class ClockView @JvmOverloads constructor(
                         alertDetailProgress = 0f
                         alertExitStartDragX = 0f
                         alertExitStartDragY = 0f
-                        invalidate()
+                        alertExitVelocityX = 0f
+                        alertExitVelocityY = 0f
+                        lastAlertScrimP = 0f
+                        lastAlertAlpha = 0f
+                        lastAlertScale = 1f
+                        cachedAlertBodyKey = null
+                        cachedAlertBodyLayout = null
+                        invalidateBlurCache()
                     }
+                    syncMotionFrameRate()
+                    invalidate()
                 }
             })
             start()
         }
+        syncMotionFrameRate()
     }
 
     private fun animateAlertDetailTo(target: Float) {
         alertDetailAnimator?.cancel()
         if (!shouldAnimate()) {
             alertDetailProgress = target
+            syncMotionFrameRate()
             invalidate()
             return
         }
-        alertDetailAnimator = ValueAnimator.ofFloat(alertDetailProgress, target).apply {
-            duration = 460L
-            interpolator = iosFluidEase
+        val startVal = alertDetailProgress
+        alertDetailAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 560L
+            interpolator = linearInterpolator
             addUpdateListener {
-                alertDetailProgress = it.animatedValue as Float
+                val raw = it.animatedValue as Float
+                // True critically-damped Apple spring (f'(0) = 0 — zero frame-1 kick, velvety landing!)
+                val p = AppleSpring.evaluate(raw, durationSec = 0.56f, responseSec = 0.48f, dampingRatio = 0.96f)
+                alertDetailProgress = lerp(startVal, target, p)
                 invalidate()
             }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    alertDetailProgress = target
+                    syncMotionFrameRate()
+                    invalidate()
+                }
+            })
             start()
         }
+        syncMotionFrameRate()
     }
 
     private fun animateUnreadPillTo(target: Float) {
@@ -911,14 +1066,23 @@ class ClockView @JvmOverloads constructor(
         if (!shouldAnimate()) {
             unreadPillProgress = target
             if (target <= 0f) renderedUnread = null
+            syncMotionFrameRate()
             invalidate()
             return
         }
-        unreadPillAnimator = ValueAnimator.ofFloat(unreadPillProgress, target).apply {
-            duration = if (target > 0f) 420L else 280L
-            interpolator = iosFluidEase
+        val startVal = unreadPillProgress
+        val dur = if (target > 0f) 460L else 300L
+        unreadPillAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = dur
+            interpolator = linearInterpolator
             addUpdateListener {
-                unreadPillProgress = it.animatedValue as Float
+                val raw = it.animatedValue as Float
+                val p = if (target > 0f) {
+                    AppleSpring.evaluate(raw, durationSec = dur / 1000f, responseSec = 0.42f, dampingRatio = 0.94f)
+                } else {
+                    AppleSpring.smootherstep(raw)
+                }
+                unreadPillProgress = lerp(startVal, target, p)
                 invalidate()
             }
             addListener(object : AnimatorListenerAdapter() {
@@ -926,12 +1090,16 @@ class ClockView @JvmOverloads constructor(
                     if (target <= 0f && unreadSummary == null) {
                         renderedUnread = null
                         unreadPillProgress = 0f
-                        invalidate()
+                    } else {
+                        unreadPillProgress = target
                     }
+                    syncMotionFrameRate()
+                    invalidate()
                 }
             })
             start()
         }
+        syncMotionFrameRate()
     }
 
     private fun animateLivePillTo(target: Float) {
@@ -939,17 +1107,23 @@ class ClockView @JvmOverloads constructor(
         if (!shouldAnimate()) {
             livePillProgress = target
             if (target <= 0f) renderedLiveActivity = null
+            syncMotionFrameRate()
             invalidate()
             return
         }
-        livePillAnimator = ValueAnimator.ofFloat(livePillProgress, target).apply {
-            duration = if (target > 0f) 480L else 280L
-            interpolator = if (target > 0f) linearInterpolator else iosEaseOut
+        val startVal = livePillProgress
+        val dur = if (target > 0f) 500L else 300L
+        livePillAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = dur
+            interpolator = linearInterpolator
             addUpdateListener {
                 val raw = it.animatedValue as Float
                 livePillProgress = if (target > 0f) {
-                    springCurve(raw, damping = 0.78f, frequency = 1.52f).coerceIn(0f, 1.06f)
-                } else raw
+                    lerp(startVal, target, AppleSpring.evaluate(raw, durationSec = dur / 1000f, responseSec = 0.42f, dampingRatio = 0.86f))
+                        .coerceIn(0f, 1.04f)
+                } else {
+                    lerp(startVal, 0f, AppleSpring.smootherstep(raw))
+                }
                 invalidate()
             }
             addListener(object : AnimatorListenerAdapter() {
@@ -960,11 +1134,13 @@ class ClockView @JvmOverloads constructor(
                     } else if (target > 0f) {
                         livePillProgress = 1f
                     }
+                    syncMotionFrameRate()
                     invalidate()
                 }
             })
             start()
         }
+        syncMotionFrameRate()
     }
 
     private fun triggerLivePillSheen() {
@@ -984,11 +1160,13 @@ class ClockView @JvmOverloads constructor(
             addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
                     liveSheenProgress = 0f
+                    syncMotionFrameRate()
                     invalidate()
                 }
             })
             start()
         }
+        syncMotionFrameRate()
     }
 
     private fun animateLiveExpandTransition(entering: Boolean) {
@@ -996,7 +1174,7 @@ class ClockView @JvmOverloads constructor(
         liveExpandExiting = !entering
         liveExpandTimeline = 0f
         liveExpandAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = if (entering) 720L else 440L
+            duration = if (entering) 580L else 380L
             interpolator = linearInterpolator
             addUpdateListener {
                 liveExpandTimeline = it.animatedValue as Float
@@ -1010,12 +1188,15 @@ class ClockView @JvmOverloads constructor(
                         liveExpandTimeline = 0f
                         liveExpandStartDragX = 0f
                         liveExpandStartDragY = 0f
-                        invalidate()
+                        invalidateBlurCache()
                     }
+                    syncMotionFrameRate()
+                    invalidate()
                 }
             })
             start()
         }
+        syncMotionFrameRate()
     }
 
     private fun animateHintTo(target: Float, clearBannerOnEnd: Boolean) {
@@ -1023,14 +1204,17 @@ class ClockView @JvmOverloads constructor(
         if (!shouldAnimate()) {
             hintAlpha = target
             if (clearBannerOnEnd && target <= 0f) bannerText = null
+            syncMotionFrameRate()
             invalidate()
             return
         }
-        hintAnimator = ValueAnimator.ofFloat(hintAlpha, target).apply {
-            duration = if (target > 0f) 280L else 420L
-            interpolator = if (target > 0f) iosFluidEase else iosEaseOut
+        val startVal = hintAlpha
+        val dur = if (target > 0f) 320L else 420L
+        hintAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = dur
+            interpolator = linearInterpolator
             addUpdateListener {
-                hintAlpha = it.animatedValue as Float
+                hintAlpha = lerp(startVal, target, AppleSpring.smootherstep(it.animatedValue as Float))
                 invalidate()
             }
             addListener(object : AnimatorListenerAdapter() {
@@ -1038,17 +1222,20 @@ class ClockView @JvmOverloads constructor(
                     if (clearBannerOnEnd && target <= 0f && hintAlpha <= 0.01f) {
                         hintAlpha = 0f
                         bannerText = null
-                        invalidate()
                     }
+                    syncMotionFrameRate()
+                    invalidate()
                 }
             })
             start()
         }
+        syncMotionFrameRate()
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         shaderWidth = -1f
+        invalidateBlurCache()
         releaseSoftBlurBitmap()
     }
 
@@ -1063,13 +1250,14 @@ class ClockView @JvmOverloads constructor(
         val alertVisible = renderedAlert != null
         val tAlert = alertTimeline.coerceIn(0f, 1f)
         val alertDragFrac = if (activeAlert != null) {
-            (kotlin.math.hypot(dragOffsetX.toDouble(), dragOffsetY.toDouble()).toFloat() / (h * 0.42f)).coerceIn(0f, 0.50f)
+            (kotlin.math.hypot(dragOffsetX.toDouble(), dragOffsetY.toDouble()).toFloat() / (h * 0.44f)).coerceIn(0f, 0.48f)
         } else 0f
         val alertScrimP = when {
             !alertVisible -> 0f
-            alertExiting -> (1f - easeOutCubic(tAlert)).coerceIn(0f, 1f)
-            else -> (easeOutCubic(subTimeline(tAlert, 0.0f, 0.78f)) * (1f - alertDragFrac * 0.40f)).coerceIn(0f, 1f)
+            alertExiting -> (alertExitStartScrimP * (1f - AppleSpring.smootherstep(tAlert))).coerceIn(0f, 1f)
+            else -> (AppleSpring.smootherstep(subTimeline(tAlert, 0.0f, 0.86f)) * (1f - alertDragFrac * 0.38f)).coerceIn(0f, 1f)
         }
+        lastAlertScrimP = alertScrimP
 
         val liveExpandedVisible = renderedExpandedLive != null && !alertVisible
         val tLive = liveExpandTimeline.coerceIn(0f, 1f)
@@ -1078,15 +1266,15 @@ class ClockView @JvmOverloads constructor(
         } else 0f
         val liveScrimP = when {
             !liveExpandedVisible -> 0f
-            liveExpandExiting -> (1f - easeOutCubic(tLive)).coerceIn(0f, 1f)
-            else -> (easeOutCubic(subTimeline(tLive, 0.0f, 0.62f)) * (1f - liveDragFrac * 0.45f)).coerceIn(0f, 1f)
+            liveExpandExiting -> (1f - AppleSpring.smootherstep(tLive)).coerceIn(0f, 1f)
+            else -> (AppleSpring.smootherstep(subTimeline(tLive, 0.0f, 0.72f)) * (1f - liveDragFrac * 0.45f)).coerceIn(0f, 1f)
         }
 
         val combinedScrimP = max(alertScrimP, liveScrimP)
         val backdropBlurP = max(alertScrimP, liveScrimP * 0.65f).coerceIn(0f, 1f)
 
-        // Subtle, poised optical settle (3% for iOS alerts, 5.5% for Live Island) — never exaggerated.
-        val depthScale = 1f - max(0.030f * alertScrimP, 0.055f * liveScrimP)
+        // Subtle, poised optical settle (2.8% for iOS alerts, 5.0% for Live Island) — never exaggerated.
+        val depthScale = 1f - max(0.028f * alertScrimP, 0.050f * liveScrimP)
 
         val (bgColor, _) = if (theme.faceStyle == FaceStyle.POSTER) {
             posterSurfaceColors(nightRed)
@@ -1094,26 +1282,14 @@ class ClockView @JvmOverloads constructor(
             (if (darkSurface) Color.BLACK else colors.background) to colors.primary
         }
 
-        val maxBlurPx = (min(w, h) * 0.090f).coerceIn(38f, 128f)
-        val blurPx = maxBlurPx * backdropBlurP
-
-        if (blurPx > 0.75f && !capturingSnapshot) {
+        if (backdropBlurP > 0.005f && !capturingSnapshot) {
             if (canvas.isHardwareAccelerated) {
-                backdropRenderNode.setPosition(0, 0, width, height)
-                val rec = backdropRenderNode.beginRecording()
-                drawClockStage(rec, w, h, bgColor, darkSurface, depthScale, hasOverlay = true)
-                backdropRenderNode.endRecording()
-                backdropRenderNode.setRenderEffect(
-                    RenderEffect.createBlurEffect(blurPx, blurPx, Shader.TileMode.CLAMP),
-                )
-                canvas.drawRenderNode(backdropRenderNode)
+                drawHardwareBlurredClockStage(canvas, w, h, bgColor, darkSurface, nightRed, depthScale, backdropBlurP)
             } else {
                 drawSoftwareBlurredClockStage(canvas, w, h, bgColor, darkSurface, depthScale, backdropBlurP)
             }
         } else {
-            if (canvas.isHardwareAccelerated) {
-                backdropRenderNode.setRenderEffect(null)
-            }
+            invalidateBlurCache()
             drawClockStage(canvas, w, h, bgColor, darkSurface, depthScale, hasOverlay = combinedScrimP > 0.001f)
         }
 
@@ -1125,16 +1301,16 @@ class ClockView @JvmOverloads constructor(
         // and returns cleanly once the overlay dissolves.
         val alertDockMask = when {
             !alertVisible -> 1f
-            alertExiting -> easeOutCubic(subTimeline(tAlert, 0.56f, 1.0f))
-            else -> (1f - easeOutCubic(subTimeline(tAlert, 0.0f, 0.30f)))
+            alertExiting -> AppleSpring.smoothstep(0.52f, 1.0f, tAlert)
+            else -> (1f - AppleSpring.smoothstep(0.0f, 0.34f, tAlert))
         }
         val liveDockMask = when {
             !liveExpandedVisible -> 1f
-            liveExpandExiting -> easeOutCubic(subTimeline(tLive, 0.58f, 1.0f))
-            else -> (1f - easeOutCubic(subTimeline(tLive, 0.0f, 0.28f)))
+            liveExpandExiting -> AppleSpring.smoothstep(0.52f, 1.0f, tLive)
+            else -> (1f - AppleSpring.smoothstep(0.0f, 0.30f, tLive))
         }
         val dockMask = min(alertDockMask, liveDockMask)
-        val liveVis = (livePillProgress * dockMask).coerceIn(0f, 1.06f)
+        val liveVis = (livePillProgress * dockMask).coerceIn(0f, 1.04f)
         val unreadVis = (unreadPillProgress * dockMask).coerceIn(0f, 1f)
 
         drawTopDynamicIslandDock(canvas, w, h, nightRed, darkSurface, liveVis, unreadVis)
@@ -1149,6 +1325,68 @@ class ClockView @JvmOverloads constructor(
         }
         if (activeAlert == null && expandedLiveActivity == null) {
             drawTransientIndicator(canvas, w, h, nightRed, darkSurface)
+        }
+        canvas.restore()
+    }
+
+    /**
+     * Pre-baked dual-depth GPU Gaussian blur (mid + deep) composited via smooth optical
+     * crossfade. Records once per minute/theme change so every 120Hz animation frame is a
+     * ~0.15ms GPU texture blend with zero Skia mipmap threshold pops!
+     */
+    private fun drawHardwareBlurredClockStage(
+        canvas: Canvas,
+        w: Float,
+        h: Float,
+        bgColor: Int,
+        darkSurface: Boolean,
+        nightRed: Boolean,
+        depthScale: Float,
+        blurP: Float,
+    ) {
+        val minuteSlot = System.currentTimeMillis() / (if (showSeconds) 1_000L else 60_000L)
+        val key = "$width:$height:$minuteSlot:${theme.id}:${theme.faceStyle}:${theme.background}:${theme.primary}:${theme.accent}:${theme.brightnessProfile}:$nightRed:${widgetTiles.hashCode()}"
+        if (key != blurCacheKey) {
+            val midBlurPx = (min(w, h) * 0.022f).coerceIn(12f, 34f)
+            val deepBlurPx = (min(w, h) * 0.090f).coerceIn(38f, 128f)
+
+            midBlurNode.setPosition(0, 0, width, height)
+            val midRec = midBlurNode.beginRecording()
+            drawClockStage(midRec, w, h, bgColor, darkSurface, depthScale = 1f, hasOverlay = true)
+            midBlurNode.endRecording()
+            midBlurNode.setRenderEffect(RenderEffect.createBlurEffect(midBlurPx, midBlurPx, Shader.TileMode.CLAMP))
+
+            deepBlurNode.setPosition(0, 0, width, height)
+            val deepRec = deepBlurNode.beginRecording()
+            drawClockStage(deepRec, w, h, bgColor, darkSurface, depthScale = 1f, hasOverlay = true)
+            deepBlurNode.endRecording()
+            deepBlurNode.setRenderEffect(RenderEffect.createBlurEffect(deepBlurPx, deepBlurPx, Shader.TileMode.CLAMP))
+
+            blurCacheKey = key
+        }
+
+        // Paint solid full-bleed backdrop underneath so the subtle 2.8% depth scale shows zero edge seam
+        backgroundPaint.shader = null
+        backgroundPaint.color = bgColor
+        canvas.drawRect(0f, 0f, w, h, backgroundPaint)
+
+        canvas.save()
+        if (depthScale < 0.999f) {
+            canvas.scale(depthScale, depthScale, w * 0.5f, h * 0.5f)
+        }
+        val midAlpha = AppleSpring.smoothstep(0.0f, 0.50f, blurP)
+        val deepAlpha = AppleSpring.smoothstep(0.18f, 1.0f, blurP)
+
+        if (midAlpha < 0.995f) {
+            drawClockStage(canvas, w, h, bgColor, darkSurface, depthScale = 1f, hasOverlay = false)
+        }
+        if (midAlpha > 0.005f && deepAlpha < 0.995f) {
+            midBlurNode.alpha = midAlpha
+            canvas.drawRenderNode(midBlurNode)
+        }
+        if (deepAlpha > 0.005f) {
+            deepBlurNode.alpha = deepAlpha
+            canvas.drawRenderNode(deepBlurNode)
         }
         canvas.restore()
     }
@@ -1177,20 +1415,27 @@ class ClockView @JvmOverloads constructor(
         val outBmp = outgoingBitmap
         if (!capturingSnapshot && outBmp != null && !outBmp.isRecycled && transitionProgress < 0.999f) {
             val rawP = transitionProgress.coerceIn(0f, 1f)
-            val springP = springCurve(rawP, damping = 0.88f, frequency = 1.48f)
-            val fadeOut = (1f - easeOutCubic(subTimeline(rawP, 0.0f, 0.68f))).coerceIn(0f, 1f)
-            val fadeIn = easeOutCubic(subTimeline(rawP, 0.08f, 0.82f)).coerceIn(0f, 1f)
+            val durSec = if (transitionDirY != 0) 0.54f else 0.48f
+            val springP = AppleSpring.evaluate(rawP, durationSec = durSec, responseSec = 0.44f, dampingRatio = 0.92f)
+            val fadeOut = (1f - AppleSpring.smoothstep(0.0f, 0.68f, rawP)).coerceIn(0f, 1f)
+            val fadeIn = AppleSpring.smoothstep(0.06f, 0.80f, rawP).coerceIn(0f, 1f)
 
             backgroundPaint.shader = null
             backgroundPaint.color = if (darkSurface) Color.BLACK else colors.background
             target.drawRect(0f, 0f, w, h, backgroundPaint)
 
-            // 1. Outgoing face glides away from the exact drag offset with velvety weight
+            // 1. Outgoing face carries exact finger release velocity seamlessly away
             val outAlpha = (fadeOut * 255f).toInt()
             if (outAlpha > 0) {
-                val outScale = 1f - 0.075f * springP
-                val outTx = transitionStartOffsetX * (1f - springP) - transitionDirX * w * 0.22f * springP
-                val outTy = transitionStartOffsetY * (1f - springP) - transitionDirY * h * 0.28f * springP
+                val outScale = 1f - 0.065f * springP
+                val outTargetX = -transitionDirX * w * 0.24f
+                val outTargetY = -transitionDirY * h * 0.28f
+                val outTx = AppleSpring.glideWithVelocity(
+                    rawP, durSec, transitionStartOffsetX, outTargetX, transitionStartVelocityX * 0.45f, responseSec = 0.40f,
+                )
+                val outTy = AppleSpring.glideWithVelocity(
+                    rawP, durSec, transitionStartOffsetY, outTargetY, transitionStartVelocityY * 0.45f, responseSec = 0.40f,
+                )
                 target.save()
                 target.translate(outTx, outTy)
                 target.scale(outScale, outScale, w * 0.5f, h * 0.5f)
@@ -1201,12 +1446,18 @@ class ClockView @JvmOverloads constructor(
                 target.restore()
             }
 
-            // 2. Incoming new face glides in with weighted iOS spring momentum
+            // 2. Incoming new face glides smoothly into place with matching Apple spring momentum
             val inAlpha = (fadeIn * 255f).toInt()
             if (inAlpha > 0) {
-                val inScale = 0.925f + 0.075f * springP
-                val inTx = transitionDirX * w * 0.24f * (1f - springP)
-                val inTy = transitionDirY * h * 0.30f * (1f - springP)
+                val inScale = 0.94f + 0.06f * springP
+                val inStartX = transitionDirX * w * 0.24f
+                val inStartY = transitionDirY * h * 0.28f
+                val inTx = AppleSpring.glideWithVelocity(
+                    rawP, durSec, inStartX, 0f, transitionStartVelocityX * 0.40f, responseSec = 0.44f,
+                )
+                val inTy = AppleSpring.glideWithVelocity(
+                    rawP, durSec, inStartY, 0f, transitionStartVelocityY * 0.40f, responseSec = 0.44f,
+                )
                 layerBounds.set(0f, 0f, w, h)
                 val inLayer = target.saveLayerAlpha(layerBounds, inAlpha)
                 target.translate(inTx, inTy)
@@ -4453,7 +4704,8 @@ class ClockView @JvmOverloads constructor(
         }
         canvas.drawRect(-12f, -12f, w + 12f, h + 12f, cardFillPaint)
 
-        // 2. Restrained, non-exaggerated entrance & calm dissolve exit physics
+        // 2. True Apple physical spring physics: f'(0)=0 smooth liftoff, zero frame-1 kick,
+        //    100% interruptible exits, and real release-velocity handoff on swipe/fling!
         val iconScale: Float
         val iconLiftY: Float
         val iconAlpha: Float
@@ -4467,29 +4719,41 @@ class ClockView @JvmOverloads constructor(
         val tiltDeg: Float
 
         if (!exiting) {
-            val iconBloom = springCurve(subTimeline(timeline, 0.04f, 0.94f), damping = 0.94f, frequency = 1.12f)
-            val iconEase = easeOutCubic(subTimeline(timeline, 0.04f, 0.78f))
-            val textEase = easeOutCubic(subTimeline(timeline, 0.12f, 0.88f))
-            val dragFade = 1f - (abs(dragOffsetX) / (w * 0.58f)).coerceIn(0f, 0.46f)
-            val dragScale = 1f - 0.032f * (kotlin.math.hypot(dragOffsetX.toDouble(), dragOffsetY.toDouble()).toFloat() / (h * 0.45f)).coerceIn(0f, 1f)
+            val iconSpring = AppleSpring.evaluate(
+                subTimeline(timeline, 0.03f, 0.98f),
+                durationSec = 0.50f,
+                responseSec = 0.44f,
+                dampingRatio = 0.92f,
+            )
+            val textSpring = AppleSpring.evaluate(
+                subTimeline(timeline, 0.08f, 1.0f),
+                durationSec = 0.48f,
+                responseSec = 0.46f,
+                dampingRatio = 0.94f,
+            )
+            val dragFade = 1f - (abs(dragOffsetX) / (w * 0.60f)).coerceIn(0f, 0.46f)
+            val dragScale = 1f - 0.028f * (kotlin.math.hypot(dragOffsetX.toDouble(), dragOffsetY.toDouble()).toFloat() / (h * 0.46f)).coerceIn(0f, 1f)
 
-            iconScale = (0.88f + 0.12f * iconBloom) * dragScale
-            iconLiftY = h * 0.022f * (1f - iconEase)
-            iconAlpha = easeOutCubic(subTimeline(timeline, 0.04f, 0.44f))
-            textScale = (0.96f + 0.04f * textEase) * dragScale
-            textLiftY = h * 0.018f * (1f - textEase)
-            textAlpha = easeOutCubic(subTimeline(timeline, 0.12f, 0.54f))
-            barAlpha = easeOutCubic(subTimeline(timeline, 0.22f, 0.72f))
+            iconScale = (0.90f + 0.10f * iconSpring) * dragScale
+            iconLiftY = h * 0.018f * (1f - iconSpring)
+            iconAlpha = AppleSpring.smoothstep(0.02f, 0.44f, timeline)
+            textScale = (0.97f + 0.03f * textSpring) * dragScale
+            textLiftY = h * 0.013f * (1f - textSpring)
+            textAlpha = AppleSpring.smoothstep(0.08f, 0.52f, timeline)
+            barAlpha = AppleSpring.smoothstep(0.18f, 0.70f, timeline)
             groupAlpha = dragFade
             shiftX = dragOffsetX
             shiftY = dragOffsetY
-            tiltDeg = (dragOffsetX / w) * 2.2f
+            tiltDeg = (dragOffsetX / w) * 2.0f
+
+            lastAlertAlpha = (iconAlpha * groupAlpha).coerceIn(0f, 1f)
+            lastAlertScale = iconScale
         } else {
-            val outP = easeOutCubic(timeline)
+            val smoothOut = AppleSpring.smootherstep(timeline)
             when (alertExitMode) {
                 AlertExitMode.TUCK_TO_PILL -> {
-                    val fade = (1f - easeOutCubic(subTimeline(timeline, 0f, 0.68f))).coerceIn(0f, 1f)
-                    val s = 1f - 0.06f * outP
+                    val fade = (alertExitStartAlpha * (1f - AppleSpring.smoothstep(0f, 0.72f, timeline))).coerceIn(0f, 1f)
+                    val s = lerp(alertExitStartScale, alertExitStartScale * 0.94f, smoothOut)
                     iconScale = s
                     textScale = s
                     iconLiftY = 0f
@@ -4498,13 +4762,14 @@ class ClockView @JvmOverloads constructor(
                     textAlpha = fade
                     barAlpha = fade
                     groupAlpha = 1f
-                    shiftX = alertExitStartDragX * (1f - outP)
-                    shiftY = lerp(alertExitStartDragY, -h * 0.026f, outP)
+                    shiftX = AppleSpring.glideWithVelocity(timeline, 0.36f, alertExitStartDragX, 0f, alertExitVelocityX * 0.35f, responseSec = 0.36f)
+                    val targetY = if (alertExitStartDragY > 24f || alertExitVelocityY > 250f) h * 0.08f else -h * 0.032f
+                    shiftY = AppleSpring.glideWithVelocity(timeline, 0.36f, alertExitStartDragY, targetY, alertExitVelocityY * 0.45f, responseSec = 0.36f)
                     tiltDeg = 0f
                 }
                 AlertExitMode.CLEAR_DISSOLVE -> {
-                    val fade = (1f - easeOutCubic(subTimeline(timeline, 0f, 0.65f))).coerceIn(0f, 1f)
-                    val s = 1f - 0.08f * outP
+                    val fade = (alertExitStartAlpha * (1f - AppleSpring.smoothstep(0f, 0.68f, timeline))).coerceIn(0f, 1f)
+                    val s = lerp(alertExitStartScale, alertExitStartScale * 0.92f, smoothOut)
                     iconScale = s
                     textScale = s
                     iconLiftY = 0f
@@ -4513,15 +4778,15 @@ class ClockView @JvmOverloads constructor(
                     textAlpha = fade
                     barAlpha = fade
                     groupAlpha = 1f
-                    shiftX = alertExitStartDragX * (1f - outP)
-                    shiftY = lerp(alertExitStartDragY, -h * 0.020f, outP)
+                    shiftX = alertExitStartDragX * (1f - smoothOut)
+                    shiftY = lerp(alertExitStartDragY, -h * 0.018f, smoothOut)
                     tiltDeg = 0f
                 }
                 AlertExitMode.FLING_LEFT,
                 AlertExitMode.FLING_RIGHT -> {
                     val dir = if (alertExitMode == AlertExitMode.FLING_RIGHT) 1f else -1f
-                    val fade = (1f - easeOutCubic(subTimeline(timeline, 0.04f, 0.86f))).coerceIn(0f, 1f)
-                    val s = 1f - 0.04f * outP
+                    val fade = (alertExitStartAlpha * (1f - AppleSpring.smoothstep(0.04f, 0.84f, timeline))).coerceIn(0f, 1f)
+                    val s = lerp(alertExitStartScale, alertExitStartScale * 0.96f, smoothOut)
                     iconScale = s
                     textScale = s
                     iconLiftY = 0f
@@ -4530,9 +4795,11 @@ class ClockView @JvmOverloads constructor(
                     textAlpha = fade
                     barAlpha = fade
                     groupAlpha = 1f
-                    shiftX = lerp(alertExitStartDragX, dir * (w * 0.42f), outP)
-                    shiftY = alertExitStartDragY * (1f - outP)
-                    tiltDeg = (shiftX / w) * 2.4f
+                    shiftX = AppleSpring.glideWithVelocity(
+                        timeline, 0.34f, alertExitStartDragX, dir * (w * 0.44f), alertExitVelocityX * 0.65f, responseSec = 0.34f,
+                    )
+                    shiftY = alertExitStartDragY * (1f - smoothOut)
+                    tiltDeg = (shiftX / w) * 2.2f
                 }
             }
         }
@@ -4621,7 +4888,7 @@ class ClockView @JvmOverloads constructor(
 
         // 4. Stage 1 Hero Typography (centered bold Title + quiet "1个通知" subtitle — exact iOS StandBy)
         val revealP = alertRevealProgress.coerceIn(0f, 1f)
-        val heroTextAlpha = ((1f - easeOutCubic(subTimeline(detailP, 0f, 0.44f))) * textAlpha * revealP).coerceIn(0f, 1f)
+        val heroTextAlpha = ((1f - AppleSpring.smoothstep(0f, 0.42f, detailP)) * textAlpha * revealP).coerceIn(0f, 1f)
         if (heroTextAlpha > 0.01f) {
             val heroTitle = if (alert.isMasked) alert.appLabel else alert.title
             val heroTitleSize = if (landscape) (h * 0.074f).coerceIn(24f, 102f) else (w * 0.068f).coerceIn(22f, 64f)
@@ -4676,9 +4943,10 @@ class ClockView @JvmOverloads constructor(
         }
 
         // 5. Stage 2 Borderless Reading View (smoothly glides in directly over the blurred clock)
-        val detailVis = (easeOutCubic(subTimeline(detailP, 0.26f, 1.0f)) * textAlpha).coerceIn(0f, 1f)
+        val detailFade = AppleSpring.smoothstep(0.24f, 0.92f, detailP)
+        val detailVis = (detailFade * textAlpha).coerceIn(0f, 1f)
         if (detailVis > 0.01f) {
-            val detailDy = h * 0.022f * (1f - easeOutCubic(subTimeline(detailP, 0.26f, 1.0f))) + textLiftY
+            val detailDy = h * 0.016f * (1f - detailFade) + textLiftY
             val headerLeft = detailIconLeft + detailIconSize + (if (landscape) h * 0.044f else w * 0.04f)
             val headerAvailW = (contentRight - headerLeft).coerceAtLeast(1f)
             val cleanBody = alert.body?.trim()?.takeIf { it.isNotEmpty() && !it.equals(alert.title.trim(), ignoreCase = true) }
@@ -4710,20 +4978,30 @@ class ClockView @JvmOverloads constructor(
             val metaBaseline = detailIconTop + detailIconSize * 0.85f + detailDy
             canvas.drawText(clippedMeta, headerLeft, metaBaseline, widgetSecondaryPaint)
 
-            // Large borderless message text floating cleanly over the frosted backdrop
+            // Large borderless message text floating cleanly over the frosted backdrop (cached StaticLayout)
             val bodyTop = detailIconTop + detailIconSize + (if (landscape) h * 0.088f else h * 0.055f) + detailDy * 1.15f
             val bodyAvailW = (contentRight - contentLeft).coerceAtLeast(1f)
+            val bodyTextSize = if (landscape) (h * 0.068f).coerceIn(22f, 86f) else (w * 0.056f).coerceIn(20f, 52f)
             widgetPrimaryPaint.typeface = iosSansMedium
-            widgetPrimaryPaint.textSize = if (landscape) (h * 0.068f).coerceIn(22f, 86f) else (w * 0.056f).coerceIn(20f, 52f)
+            widgetPrimaryPaint.textSize = bodyTextSize
             widgetPrimaryPaint.color = withAlpha(primaryText, detailVis * 0.94f)
-            val bodyLayout = StaticLayout.Builder
-                .obtain(bodyCopy, 0, bodyCopy.length, widgetPrimaryPaint, bodyAvailW.toInt().coerceAtLeast(1))
-                .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-                .setMaxLines(3)
-                .setEllipsize(TextUtils.TruncateAt.END)
-                .setIncludePad(false)
-                .setLineSpacing(0f, 1.22f)
-                .build()
+            val bodyKey = "$bodyCopy|${bodyAvailW.toInt()}|${bodyTextSize.toInt()}"
+            val bodyLayout = if (bodyKey == cachedAlertBodyKey && cachedAlertBodyLayout != null) {
+                cachedAlertBodyLayout!!
+            } else {
+                StaticLayout.Builder
+                    .obtain(bodyCopy, 0, bodyCopy.length, widgetPrimaryPaint, bodyAvailW.toInt().coerceAtLeast(1))
+                    .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+                    .setMaxLines(3)
+                    .setEllipsize(TextUtils.TruncateAt.END)
+                    .setIncludePad(false)
+                    .setLineSpacing(0f, 1.22f)
+                    .build()
+                    .also {
+                        cachedAlertBodyKey = bodyKey
+                        cachedAlertBodyLayout = it
+                    }
+            }
             canvas.save()
             canvas.translate(contentLeft, bodyTop)
             bodyLayout.draw(canvas)
@@ -5089,32 +5367,30 @@ class ClockView @JvmOverloads constructor(
         canvas.drawRect(envL, envT, envR, envB, cardFillPaint)
         cardFillPaint.shader = null
 
-        // Subtle side folds
+        // Subtle side folds (zero per-frame Path allocation)
         val cx = left + size * 0.5f
         val cy = top + size * 0.52f
-        val sideFold = Path().apply {
-            moveTo(envL, envB)
-            lineTo(cx, cy - envH * 0.06f)
-            lineTo(envR, envB)
-            close()
-        }
+        envFoldPath.reset()
+        envFoldPath.moveTo(envL, envB)
+        envFoldPath.lineTo(cx, cy - envH * 0.06f)
+        envFoldPath.lineTo(envR, envB)
+        envFoldPath.close()
         cardFillPaint.color = if (nightRed) Color.parseColor("#4C0B09") else Color.parseColor("#FFFFFF")
-        canvas.drawPath(sideFold, cardFillPaint)
+        canvas.drawPath(envFoldPath, cardFillPaint)
 
         // Top envelope flap with soft shadow crease
-        val flapPath = Path().apply {
-            moveTo(envL - envW * 0.04f, envT - envH * 0.04f)
-            lineTo(envR + envW * 0.04f, envT - envH * 0.04f)
-            lineTo(cx, cy + envH * 0.05f)
-            close()
-        }
+        envFlapPath.reset()
+        envFlapPath.moveTo(envL - envW * 0.04f, envT - envH * 0.04f)
+        envFlapPath.lineTo(envR + envW * 0.04f, envT - envH * 0.04f)
+        envFlapPath.lineTo(cx, cy + envH * 0.05f)
+        envFlapPath.close()
         cardRimPaint.shader = null
         cardRimPaint.strokeWidth = (size * 0.016f).coerceIn(1.5f, 6f)
         cardRimPaint.color = if (nightRed) Color.argb(120, 255, 69, 58) else Color.argb(64, 0, 92, 224)
-        canvas.drawPath(flapPath, cardRimPaint)
+        canvas.drawPath(envFlapPath, cardRimPaint)
 
         cardFillPaint.color = if (nightRed) Color.parseColor("#6A110E") else Color.WHITE
-        canvas.drawPath(flapPath, cardFillPaint)
+        canvas.drawPath(envFlapPath, cardFillPaint)
         canvas.restore()
 
         // Delicate specular edge around the continuous Apple squircle
