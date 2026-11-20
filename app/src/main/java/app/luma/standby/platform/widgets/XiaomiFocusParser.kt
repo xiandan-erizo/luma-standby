@@ -9,6 +9,7 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.floatOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.longOrNull
 
 /**
  * Result of inspecting a notification for Xiaomi HyperOS Super Island (`miui.focus.param`)
@@ -112,6 +113,20 @@ internal object XiaomiFocusParser {
             ticker,
         )?.clean(MAX_SUBTITLE)?.takeIf { !it.equals(title, ignoreCase = true) }
 
+        val timerInfo = digitInfo?.obj("timerInfo") ?: v2.obj("timerInfo") ?: baseInfo?.obj("timerInfo")
+        val timerMetric = timerInfo?.let { ti ->
+            val targetMs = ti.long("timerWhen") ?: 0L
+            val nowMs = ti.long("timerSystemCurrent")?.takeIf { it > 0L } ?: System.currentTimeMillis()
+            val deltaSec = ((targetMs - nowMs) / 1000L)
+            when {
+                targetMs <= 0L -> null
+                deltaSec >= 3600L -> "${deltaSec / 3600}h ${(deltaSec % 3600) / 60}m"
+                deltaSec >= 60L -> "${(deltaSec + 30) / 60} min"
+                deltaSec > 0L -> "${deltaSec}s"
+                else -> null
+            }
+        }
+
         val highlightMetric = firstNonBlank(
             digitInfo?.str("digit"),
             rightText?.str("title")?.let { rt ->
@@ -124,6 +139,7 @@ internal object XiaomiFocusParser {
             smallTextInfo?.str("title"),
             rightText?.str("content"),
             digitInfo?.str("content"),
+            timerMetric,
         )?.clean(MAX_METRIC)?.takeIf { !it.equals(title, ignoreCase = true) }
 
         val compactText = firstNonBlank(
@@ -260,6 +276,9 @@ internal object XiaomiFocusParser {
 
     private fun JsonObject.float(key: String): Float? =
         (this[key] as? JsonPrimitive)?.let { it.floatOrNull ?: it.intOrNull?.toFloat() }
+
+    private fun JsonObject.long(key: String): Long? =
+        (this[key] as? JsonPrimitive)?.longOrNull
 
     private fun firstNonBlank(vararg values: String?): String? =
         values.firstOrNull { !it.isNullOrBlank() }

@@ -96,6 +96,7 @@ class StandbyActivity : ComponentActivity() {
     private var activeAlert: StandbyNotificationAlert? = null
     private var latestNotifications: List<NotificationInfo> = emptyList()
     private var liveActivities: List<LiveActivityInfo> = emptyList()
+    private var debugLiveActivities: List<LiveActivityInfo> = emptyList()
     private var selectedLiveIndex: Int = 0
     private var expandedLiveActivity: LiveActivityInfo? = null
 
@@ -188,6 +189,7 @@ class StandbyActivity : ComponentActivity() {
                     }
                     launch {
                         DebugIslandBus.payloads.collect { payload ->
+                            debugLiveActivities = payload.activities
                             liveActivities = payload.activities
                             selectedLiveIndex = 0
                             clockView.setLiveActivities(payload.activities, albumArt = null, selectedIndex = 0)
@@ -195,6 +197,7 @@ class StandbyActivity : ComponentActivity() {
                                 expandCurrentLiveActivity()
                             } else if (payload.activities.isEmpty()) {
                                 collapseLiveActivity()
+                                refreshWidgets()
                             }
                         }
                     }
@@ -446,6 +449,7 @@ class StandbyActivity : ComponentActivity() {
         activeAlert = null
         latestNotifications = emptyList()
         liveActivities = emptyList()
+        debugLiveActivities = emptyList()
         selectedLiveIndex = 0
         expandedLiveActivity = null
         alertTracker.reset()
@@ -518,12 +522,13 @@ class StandbyActivity : ComponentActivity() {
 
         if (liveWanted) {
             val bundle = widgetCollector.collectLiveActivities(enabled = true)
-            liveActivities = bundle.activities
-            selectedLiveIndex = if (bundle.activities.isEmpty()) 0 else selectedLiveIndex.coerceIn(0, bundle.activities.lastIndex)
-            clockView.setLiveActivities(bundle.activities, bundle.musicAlbumArt, selectedLiveIndex)
+            val effective = if (bundle.activities.isNotEmpty()) bundle.activities else debugLiveActivities
+            liveActivities = effective
+            selectedLiveIndex = if (effective.isEmpty()) 0 else selectedLiveIndex.coerceIn(0, effective.lastIndex)
+            clockView.setLiveActivities(effective, bundle.musicAlbumArt, selectedLiveIndex)
             val currentExp = expandedLiveActivity
             if (currentExp != null) {
-                val updated = bundle.activities.firstOrNull { it.key == currentExp.key }
+                val updated = effective.firstOrNull { it.key == currentExp.key }
                 if (updated != null) {
                     expandedLiveActivity = updated
                 } else {
