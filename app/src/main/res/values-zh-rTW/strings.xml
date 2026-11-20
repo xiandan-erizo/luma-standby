@@ -190,6 +190,9 @@
     <string name="notif_tap_to_view">輕點檢視</string>
     <string name="notif_count_pill">%1$d 則通知</string>
     <string name="notif_more_badge">還有 %1$d 則</string>
+    <string name="notif_clear">清除</string>
+    <string name="notif_clear_all">清空 %1$d 則</string>
+    <string name="notif_cleared_banner">已清除通知</string>
     <string name="alerts_heading">待機通知提醒</string>
     <string name="alerts_enable">來訊全螢幕液態玻璃彈窗</string>
     <string name="alerts_preview_body">解鎖時顯示寄件人與簡短內容</string>

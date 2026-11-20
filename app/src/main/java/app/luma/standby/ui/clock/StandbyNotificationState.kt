@@ -13,6 +13,14 @@ internal object DebugAlertBus {
     }
 }
 
+/** Distinguishes keeping a notification unread (tuck into pill) from permanently clearing it. */
+enum class AlertExitMode {
+    TUCK_TO_PILL,
+    CLEAR_DISSOLVE,
+    FLING_LEFT,
+    FLING_RIGHT,
+}
+
 /**
  * Transient, in-memory-only full-screen iOS StandBy notification alert.
  * Never persisted to disk and cleared immediately on pause or screen-off.
@@ -22,6 +30,7 @@ data class StandbyNotificationAlert(
     val title: String,
     val body: String? = null,
     val packageName: String? = null,
+    val key: String? = null,
     val unreadCount: Int = 1,
     val tapToReveal: Boolean = false,
     val revealed: Boolean = false,

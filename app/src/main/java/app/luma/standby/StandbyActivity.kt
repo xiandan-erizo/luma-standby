@@ -41,6 +41,7 @@ import app.luma.standby.platform.widgets.LumaNotificationListener
 import app.luma.standby.platform.widgets.WeatherStore
 import app.luma.standby.platform.widgets.WidgetDataCollector
 import app.luma.standby.platform.widgets.WidgetRenderer
+import app.luma.standby.ui.clock.AlertExitMode
 import app.luma.standby.ui.clock.ClockView
 import app.luma.standby.ui.clock.DebugAlertBus
 import app.luma.standby.ui.clock.StandbyAlertTracker
@@ -84,6 +85,7 @@ class StandbyActivity : ComponentActivity() {
     private var lastTapAt = 0L
     private var touchDownX = 0f
     private var touchDownY = 0f
+    private var touchDownOnUnreadPill = false
     private var swipeConsumed = false
 
     private val alertTracker = StandbyAlertTracker()
@@ -155,23 +157,24 @@ class StandbyActivity : ComponentActivity() {
                 if (isDebuggable) {
                     launch {
                         DebugAlertBus.alerts.collect { previewAlert ->
-                            latestNotifications = listOf(
+                            latestNotifications = List(previewAlert.unreadCount.coerceAtLeast(1)) { idx ->
                                 NotificationInfo(
                                     appLabel = previewAlert.appLabel,
-                                    title = previewAlert.title,
+                                    title = if (idx == 0) previewAlert.title else "${previewAlert.title} #${idx + 1}",
                                     body = previewAlert.body,
                                     packageName = previewAlert.packageName,
-                                    postTimeMillis = System.currentTimeMillis(),
-                                ),
-                            )
+                                    postTimeMillis = System.currentTimeMillis() - idx * 1000L,
+                                    key = previewAlert.key ?: "debug-$idx",
+                                )
+                            }
                             clockView.setUnreadSummary(
                                 UnreadNotificationSummary(
                                     appLabel = previewAlert.appLabel,
                                     packageName = previewAlert.packageName,
-                                    count = previewAlert.unreadCount,
+                                    count = latestNotifications.size,
                                 ),
                             )
-                            showNotificationAlert(previewAlert)
+                            showNotificationAlert(previewAlert.copy(key = latestNotifications.first().key))
                         }
                     }
                 }
@@ -184,19 +187,23 @@ class StandbyActivity : ComponentActivity() {
                 MotionEvent.ACTION_DOWN -> {
                     touchDownX = event.x
                     touchDownY = event.y
+                    touchDownOnUnreadPill = activeAlert == null && clockView.hitTestUnreadPill(event.x, event.y)
                     swipeConsumed = false
                     enterInteractive(flashHint = false)
                 }
 
                 MotionEvent.ACTION_MOVE -> {
-                    val dx = event.x - touchDownX
-                    val dy = event.y - touchDownY
-                    if (abs(dx) > 12f || abs(dy) > 12f) {
-                        clockView.setInteractiveDrag(dx, dy)
+                    if (!touchDownOnUnreadPill) {
+                        val dx = event.x - touchDownX
+                        val dy = event.y - touchDownY
+                        if (abs(dx) > 12f || abs(dy) > 12f) {
+                            clockView.setInteractiveDrag(dx, dy)
+                        }
                     }
                 }
 
                 MotionEvent.ACTION_CANCEL -> {
+                    touchDownOnUnreadPill = false
                     clockView.releaseInteractiveDrag()
                 }
 
@@ -206,24 +213,48 @@ class StandbyActivity : ComponentActivity() {
                     val absDx = abs(dx)
                     val absDy = abs(dy)
                     val currentAlert = activeAlert
+                    val startedOnUnreadPill = touchDownOnUnreadPill
+                    touchDownOnUnreadPill = false
 
                     if (currentAlert != null) {
-                        // Notification takeover is visible: swipe dismisses; tap reveals or dismisses;
-                        // partial drag springs smoothly back to center.
-                        if (absDy > SWIPE_THRESHOLD_PX || absDx > SWIPE_THRESHOLD_PX) {
+                        // Notification takeover is visible:
+                        // - Swipe left/right or tap "Clear" / "Clear N" permanently clears from Android shade.
+                        // - Swipe up or tap body tucks back into top pill (or reveals if Tap-to-View is on).
+                        // - Partial drag springs smoothly back to center.
+                        if (absDx > SWIPE_THRESHOLD_PX && absDx > absDy * 1.15f) {
                             swipeConsumed = true
                             lastTapAt = 0L
-                            dismissNotificationAlert()
+                            clearCurrentNotification(
+                                if (dx > 0f) AlertExitMode.FLING_RIGHT else AlertExitMode.FLING_LEFT,
+                            )
+                        } else if (absDy > SWIPE_THRESHOLD_PX) {
+                            swipeConsumed = true
+                            lastTapAt = 0L
+                            dismissNotificationAlert(AlertExitMode.TUCK_TO_PILL)
                         } else if (absDx < TAP_SLOP_PX && absDy < TAP_SLOP_PX) {
                             clockView.releaseInteractiveDrag()
                             lastTapAt = 0L
-                            if (currentAlert.tapToReveal && !currentAlert.revealed && !currentAlert.isPrivateRedacted) {
-                                showNotificationAlert(currentAlert.copy(revealed = true))
-                            } else {
-                                dismissNotificationAlert()
+                            when {
+                                clockView.hitTestAlertClear(event.x, event.y) ->
+                                    clearCurrentNotification(AlertExitMode.CLEAR_DISSOLVE)
+                                clockView.hitTestAlertClearAll(event.x, event.y) ->
+                                    clearAllNotifications(AlertExitMode.CLEAR_DISSOLVE)
+                                currentAlert.tapToReveal && !currentAlert.revealed && !currentAlert.isPrivateRedacted ->
+                                    showNotificationAlert(currentAlert.copy(revealed = true))
+                                else ->
+                                    dismissNotificationAlert(AlertExitMode.TUCK_TO_PILL)
                             }
                         } else {
                             clockView.releaseInteractiveDrag()
+                        }
+                    } else if (startedOnUnreadPill) {
+                        lastTapAt = 0L
+                        if (absDx > SWIPE_THRESHOLD_PX || absDy > SWIPE_THRESHOLD_PX) {
+                            swipeConsumed = true
+                            clearAllNotifications(AlertExitMode.CLEAR_DISSOLVE)
+                            clockView.flashBanner(getString(R.string.notif_cleared_banner))
+                        } else if (absDx < TAP_SLOP_PX && absDy < TAP_SLOP_PX) {
+                            openLatestNotificationAlert()
                         }
                     } else if (absDy > SWIPE_THRESHOLD_PX && absDy > absDx * 1.35f) {
                         swipeConsumed = true
@@ -426,6 +457,7 @@ class StandbyActivity : ComponentActivity() {
             title = info.title,
             body = info.body,
             packageName = info.packageName,
+            key = info.key,
             unreadCount = count,
             tapToReveal = settings.notificationTapToReveal,
             revealed = false,
@@ -441,12 +473,41 @@ class StandbyActivity : ComponentActivity() {
         mainHandler.postDelayed(dismissAlertRunnable, ALERT_VISIBLE_MS)
     }
 
-    private fun dismissNotificationAlert() {
+    private fun dismissNotificationAlert(exitMode: AlertExitMode = AlertExitMode.TUCK_TO_PILL) {
         mainHandler.removeCallbacks(dismissAlertRunnable)
         if (activeAlert != null) {
             activeAlert = null
-            clockView.setActiveAlert(null)
+            clockView.setActiveAlert(null, exitMode)
         }
+    }
+
+    private fun clearCurrentNotification(exitMode: AlertExitMode) {
+        val current = activeAlert ?: return
+        val key = current.key
+        if (!key.isNullOrBlank()) {
+            LumaNotificationListener.dismiss(key)
+        }
+        val remaining = if (!key.isNullOrBlank()) {
+            latestNotifications.filterNot { it.key == key }
+        } else {
+            latestNotifications.drop(1)
+        }
+        latestNotifications = remaining
+        val nextTop = remaining.firstOrNull()
+        clockView.setUnreadSummary(
+            nextTop?.let { UnreadNotificationSummary(it.appLabel, it.packageName, remaining.size) },
+        )
+        dismissNotificationAlert(exitMode)
+    }
+
+    private fun clearAllNotifications(exitMode: AlertExitMode) {
+        val keys = latestNotifications.mapNotNull { it.key?.takeIf(String::isNotBlank) }
+        if (keys.isNotEmpty()) {
+            LumaNotificationListener.dismissAll(keys)
+        }
+        latestNotifications = emptyList()
+        clockView.setUnreadSummary(null)
+        dismissNotificationAlert(exitMode)
     }
 
     private fun applyBrightnessIfMinuteChanged() {

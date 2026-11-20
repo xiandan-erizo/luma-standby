@@ -190,6 +190,9 @@
     <string name="notif_tap_to_view">Tap to view</string>
     <string name="notif_count_pill">%1$d notifications</string>
     <string name="notif_more_badge">+%1$d more</string>
+    <string name="notif_clear">Clear</string>
+    <string name="notif_clear_all">Clear %1$d</string>
+    <string name="notif_cleared_banner">Notifications cleared</string>
     <string name="alerts_heading">StandBy Notifications</string>
     <string name="alerts_enable">Full-screen StandBy alerts</string>
     <string name="alerts_preview_body">Show sender &amp; message preview</string>

@@ -248,6 +248,31 @@ class LumaNotificationListener : NotificationListenerService() {
             result.orEmpty()
         }
 
+        /**
+         * Dismisses a single user-visible notification by key, both from Standby's
+         * in-memory snapshot and from Android's system notification shade.
+         */
+        fun dismiss(key: String?) = synchronized(monitor) {
+            if (key.isNullOrBlank()) return@synchronized
+            snapshot.removed(key)
+            runCatching { active?.cancelNotification(key) }
+            changed()
+        }
+
+        /**
+         * Dismisses only the specified notification keys currently surfaced in Standby
+         * (never calls cancelAllNotifications, leaving hidden/ongoing notifications intact).
+         */
+        fun dismissAll(keys: Collection<String>) = synchronized(monitor) {
+            if (keys.isEmpty()) return@synchronized
+            for (key in keys) {
+                if (key.isBlank()) continue
+                snapshot.removed(key)
+                runCatching { active?.cancelNotification(key) }
+            }
+            changed()
+        }
+
         /** Opens Settings only on a caller's explicit user action; grants nothing itself. */
         fun openSettings(context: Context) {
             val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)

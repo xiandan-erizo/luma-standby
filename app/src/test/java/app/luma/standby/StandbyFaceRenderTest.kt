@@ -21,6 +21,7 @@ import app.luma.standby.domain.widget.WeatherInfo
 import app.luma.standby.domain.widget.WidgetData
 import app.luma.standby.platform.widgets.HeadsUpPolicyMath
 import app.luma.standby.platform.widgets.WidgetRenderer
+import app.luma.standby.ui.clock.AlertExitMode
 import app.luma.standby.ui.clock.ClockView
 import app.luma.standby.ui.clock.FaceLayout
 import app.luma.standby.ui.clock.StandbyAlertTracker
@@ -212,6 +213,50 @@ class StandbyFaceRenderTest {
         val floatFull = FaceLayout.create(2400f, 1080f, withWidgets = true, style = FaceStyle.FLOAT)
         assertTrue(floatFull.clock.width > 2000f)
         assertTrue(floatFull.date.bottom < floatFull.clock.top)
+    }
+
+    @Test
+    fun alertClearButtonsHaveHitTargetsAndResetOnDismiss() {
+        val view = ClockView(context)
+        view.animationsEnabled = false
+        view.applyState(ThemePresets.iosCoral, true, false, false, null)
+        view.setActiveAlert(
+            StandbyNotificationAlert(
+                appLabel = "微信",
+                title = "产品设计群",
+                body = "张三：马上评审",
+                key = "k-1",
+                unreadCount = 3,
+            ),
+        )
+        view.measure(
+            View.MeasureSpec.makeMeasureSpec(1280, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(590, View.MeasureSpec.EXACTLY),
+        )
+        view.layout(0, 0, 1280, 590)
+        val bmp = Bitmap.createBitmap(1280, 590, Bitmap.Config.ARGB_8888)
+        view.draw(Canvas(bmp))
+
+        // Scan top-right region of hero card to verify both Clear and Clear-All hit targets exist and don't overlap.
+        var clearHits = 0
+        var clearAllHits = 0
+        var overlapHits = 0
+        for (y in 120..300 step 4) {
+            for (x in 600..1120 step 4) {
+                val c = view.hitTestAlertClear(x.toFloat(), y.toFloat())
+                val a = view.hitTestAlertClearAll(x.toFloat(), y.toFloat())
+                if (c) clearHits++
+                if (a) clearAllHits++
+                if (c && a) overlapHits++
+            }
+        }
+        assertTrue("Expected Clear button hit target", clearHits > 10)
+        assertTrue("Expected Clear-All button hit target when unreadCount > 1", clearAllHits > 10)
+        assertTrue("Clear and Clear-All hit targets should remain well separated", overlapHits < 15)
+
+        view.setActiveAlert(null, AlertExitMode.FLING_LEFT)
+        assertFalse(view.hitTestAlertClear(1000f, 220f))
+        assertFalse(view.hitTestAlertClearAll(900f, 220f))
     }
 
     private fun renderClock(
