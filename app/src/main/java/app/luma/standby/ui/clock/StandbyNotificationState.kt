@@ -20,6 +20,7 @@ internal object DebugAlertBus {
 data class StandbyNotificationAlert(
     val appLabel: String,
     val title: String,
+    val body: String? = null,
     val packageName: String? = null,
     val unreadCount: Int = 1,
     val tapToReveal: Boolean = false,

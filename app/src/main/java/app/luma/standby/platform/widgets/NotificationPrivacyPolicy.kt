@@ -92,16 +92,32 @@ internal class NotificationMemorySnapshot(private val capacity: Int = 64) {
     fun keys(): List<String> = entries.keys.toList()
 
     /** Privacy changes may erase a title but never restore one from an older event. */
-    fun restrictVisibility(key: String, visibilityOverride: NotificationVisibility) {
+    fun restrictVisibility(
+        key: String,
+        visibilityOverride: NotificationVisibility,
+        allowUnlockedPreview: Boolean = false,
+    ) {
         val entry = entries[key] ?: return
         val visibility = NotificationPrivacyPolicy.visibility(entry.visibility, visibilityOverride)
+        val baseMode = NotificationPrivacyPolicy.titleMode(visibility)
+        val effectiveMode = if (allowUnlockedPreview && baseMode == NotificationTitleMode.APP_LABEL) {
+            NotificationTitleMode.PUBLIC_TITLE
+        } else {
+            baseMode
+        }
         val info = NotificationPrivacyPolicy.info(
-            mode = NotificationPrivacyPolicy.titleMode(visibility),
+            mode = effectiveMode,
             appLabel = entry.info.appLabel,
             packageName = entry.info.packageName,
             postTimeMillis = entry.info.postTimeMillis,
             key = entry.info.key,
-        ) { entry.info.title }
+        ) { entry.info.title }?.let { rebuilt ->
+            if (allowUnlockedPreview && visibility != NotificationVisibility.SECRET) {
+                rebuilt.copy(body = entry.info.body)
+            } else {
+                rebuilt
+            }
+        }
         posted(key, entry.postTime, info, visibility)
     }
 

@@ -190,4 +190,13 @@
     <string name="notif_tap_to_view">Tap to view</string>
     <string name="notif_count_pill">%1$d notifications</string>
     <string name="notif_more_badge">+%1$d more</string>
+    <string name="alerts_heading">StandBy Notifications</string>
+    <string name="alerts_enable">Full-screen StandBy alerts</string>
+    <string name="alerts_preview_body">Show sender &amp; message preview</string>
+    <string name="alerts_preview_body_sub">Memory-only while unlocked; cleared immediately on lock or screen off</string>
+    <string name="alerts_tap_to_reveal">Show preview on tap only</string>
+    <string name="alerts_tap_to_reveal_sub">Hides message details until you tap the alert</string>
+    <string name="alerts_suppress_headsup">Hide system floating banner in StandBy</string>
+    <string name="alerts_dnd_needed">Needs Do Not Disturb access (restores automatically on exit)</string>
+    <string name="alerts_dnd_granted">Do Not Disturb access granted</string>
 </resources>

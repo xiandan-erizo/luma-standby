@@ -23,6 +23,7 @@ class WidgetDataCollector(private val context: Context) {
         enabledIds: Set<String>,
         weather: WeatherInfo? = null,
         notificationAlertsEnabled: Boolean = false,
+        notificationPreviewEnabled: Boolean = false,
     ): WidgetData {
         val needsBattery = enabledIds.contains("battery")
         val needsAlarm = enabledIds.contains("alarm")
@@ -35,6 +36,7 @@ class WidgetDataCollector(private val context: Context) {
         val hasAccess = needsSensitiveData && SensitiveWidgetAccess.isUnlocked(context) &&
             LumaNotificationListener.isEnabled(context)
         // Media opt-in never enables notification-title collection.
+        LumaNotificationListener.setPreviewEnabled(notificationPreviewEnabled && needsNotifications && hasAccess)
         LumaNotificationListener.setCollectionEnabled(needsNotifications && hasAccess)
         val notifications = if (needsNotifications && hasAccess) {
             LumaNotificationListener.latest(context)

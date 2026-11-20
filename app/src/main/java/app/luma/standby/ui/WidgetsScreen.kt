@@ -20,6 +20,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -48,6 +49,7 @@ import app.luma.standby.domain.widget.LumaWidget
 import app.luma.standby.domain.widget.WidgetData
 import app.luma.standby.domain.widget.WidgetPermission
 import app.luma.standby.domain.widget.WidgetSlot
+import app.luma.standby.platform.widgets.HeadsUpSuppressor
 import app.luma.standby.platform.widgets.LumaNotificationListener
 import app.luma.standby.platform.widgets.SystemWidgetSource
 import app.luma.standby.platform.widgets.WidgetRenderer
@@ -65,6 +67,7 @@ fun WidgetsScreen(
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { resumeTick++ }
 
     val notificationAccess = remember(resumeTick) { LumaNotificationListener.isEnabled(context) }
+    val dndAccess = remember(resumeTick) { HeadsUpSuppressor.isAccessGranted(context) }
     val widgets = remember { selectableWidgets }
     val visibleIds = remember(widgets) { widgets.map { it.id }.toSet() }
     val placements = settings.widgetPlacements.filter { it.widgetId in visibleIds }
@@ -75,6 +78,17 @@ fun WidgetsScreen(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         item(key = "preview") { WidgetPreview(settings, resumeTick) }
+
+        item(key = "standby_alerts") {
+            StandbyAlertsCard(
+                settings = settings,
+                notificationAccess = notificationAccess,
+                dndAccess = dndAccess,
+                onChange = onChange,
+                onOpenNotifAccess = { LumaNotificationListener.openSettings(context) },
+                onOpenDndAccess = { HeadsUpSuppressor.openSettings(context) },
+            )
+        }
 
         item(key = "intro") {
             Text(
@@ -370,6 +384,94 @@ private fun WeatherLocationEditor(
 }
 
 private fun String.toSlotOrNull(): WidgetSlot? = runCatching { WidgetSlot.valueOf(this) }.getOrNull()
+
+@Composable
+private fun StandbyAlertsCard(
+    settings: LumaSettings,
+    notificationAccess: Boolean,
+    dndAccess: Boolean,
+    onChange: ((LumaSettings) -> LumaSettings) -> Unit,
+    onOpenNotifAccess: () -> Unit,
+    onOpenDndAccess: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            text = stringResource(R.string.alerts_heading),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        AlertToggleRow(
+            title = stringResource(R.string.alerts_enable),
+            subtitle = stringResource(
+                if (notificationAccess) R.string.widget_permission_granted else R.string.widget_permission_notification,
+            ),
+            checked = settings.notificationAlerts,
+            onChecked = { v -> onChange { it.copy(notificationAlerts = v) } },
+            actionLabel = if (!notificationAccess) stringResource(R.string.widget_permission_open) else null,
+            onAction = onOpenNotifAccess,
+        )
+        if (settings.notificationAlerts) {
+            AlertToggleRow(
+                title = stringResource(R.string.alerts_preview_body),
+                subtitle = stringResource(R.string.alerts_preview_body_sub),
+                checked = settings.notificationPreview,
+                onChecked = { v -> onChange { it.copy(notificationPreview = v) } },
+            )
+            AlertToggleRow(
+                title = stringResource(R.string.alerts_tap_to_reveal),
+                subtitle = stringResource(R.string.alerts_tap_to_reveal_sub),
+                checked = settings.notificationTapToReveal,
+                onChecked = { v -> onChange { it.copy(notificationTapToReveal = v) } },
+            )
+            AlertToggleRow(
+                title = stringResource(R.string.alerts_suppress_headsup),
+                subtitle = stringResource(
+                    if (dndAccess) R.string.alerts_dnd_granted else R.string.alerts_dnd_needed,
+                ),
+                checked = settings.suppressSystemHeadsUp,
+                onChecked = { v -> onChange { it.copy(suppressSystemHeadsUp = v) } },
+                actionLabel = if (!dndAccess) stringResource(R.string.widget_permission_open) else null,
+                onAction = onOpenDndAccess,
+            )
+        }
+    }
+}
+
+@Composable
+private fun AlertToggleRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onChecked: (Boolean) -> Unit,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (actionLabel != null && onAction != null) {
+            OutlinedButton(onClick = onAction) { Text(actionLabel) }
+        }
+        Switch(checked = checked, onCheckedChange = onChecked)
+    }
+}
 
 /** Whether [candidate] can take [widgetId] without exceeding the rendered capacity. */
 private fun hasRoom(placements: List<StoredPlacement>, widgetId: String, candidate: WidgetSlot): Boolean {

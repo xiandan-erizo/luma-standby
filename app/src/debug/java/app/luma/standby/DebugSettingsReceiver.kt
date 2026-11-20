@@ -104,6 +104,7 @@ class DebugSettingsReceiver : BroadcastReceiver() {
                 val parts = raw.split("|")
                 val appLabel = parts.getOrNull(0)?.trim().orEmpty().ifEmpty { "Messages" }
                 val title = parts.getOrNull(1)?.trim().orEmpty().ifEmpty { appLabel }
+                val body = parts.getOrNull(2)?.trim()?.ifEmpty { null }
                 val pkg = intent.getStringExtra("mockPkg")
                 val count = intent.getIntExtra("mockCount", 1).coerceAtLeast(1)
                 val tapReveal = intent.getBooleanExtra("mockTapReveal", false)
@@ -111,11 +112,12 @@ class DebugSettingsReceiver : BroadcastReceiver() {
                     StandbyNotificationAlert(
                         appLabel = appLabel,
                         title = title,
+                        body = body,
                         packageName = pkg,
                         unreadCount = count,
                         tapToReveal = tapReveal,
                         revealed = false,
-                        isPrivateRedacted = title.equals(appLabel, ignoreCase = true),
+                        isPrivateRedacted = title.equals(appLabel, ignoreCase = true) && body == null,
                     ),
                 )
             }

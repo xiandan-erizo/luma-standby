@@ -68,6 +68,7 @@ data class NotificationInfo(
     val packageName: String? = null,
     val postTimeMillis: Long = 0L,
     val key: String? = null,
+    val body: String? = null,
 )
 
 enum class WidgetKind {

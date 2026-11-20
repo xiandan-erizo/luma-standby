@@ -190,4 +190,13 @@
     <string name="notif_tap_to_view">轻点查看</string>
     <string name="notif_count_pill">%1$d 条通知</string>
     <string name="notif_more_badge">还有 %1$d 条</string>
+    <string name="alerts_heading">待机通知提醒</string>
+    <string name="alerts_enable">来消息全屏液态玻璃弹窗</string>
+    <string name="alerts_preview_body">解锁时显示发件人与简短内容</string>
+    <string name="alerts_preview_body_sub">仅存于内存不落盘，锁屏或息屏立即清空</string>
+    <string name="alerts_tap_to_reveal">轻点以显示预览</string>
+    <string name="alerts_tap_to_reveal_sub">默认隐藏消息详情，轻点通知卡后展开</string>
+    <string name="alerts_suppress_headsup">待机时屏蔽系统悬浮横幅</string>
+    <string name="alerts_dnd_needed">需要勿扰权限（仅拦截横幅不静音，退出待机自动还原）</string>
+    <string name="alerts_dnd_granted">已授予勿扰权限</string>
 </resources>

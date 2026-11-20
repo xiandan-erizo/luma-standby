@@ -48,6 +48,7 @@ import app.luma.standby.domain.theme.ThemePresets
 import app.luma.standby.domain.widget.WidgetGlyph
 import app.luma.standby.domain.widget.WidgetKind
 import app.luma.standby.domain.widget.WidgetSlot
+import app.luma.standby.platform.widgets.LumaNotificationListener
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
@@ -2899,23 +2900,53 @@ class ClockView @JvmOverloads constructor(
                     canvas.restoreToCount(tapLayer)
                 }
             } else {
-                widgetPrimaryPaint.typeface = roundedExtraBold
-                widgetPrimaryPaint.color = withAlpha(primaryText, combinedBodyAlpha)
-                val baseSize = (heroH * 0.165f).coerceIn(22f, 78f)
-                widgetPrimaryPaint.textSize = baseSize
-                val staticLayout = StaticLayout.Builder
-                    .obtain(alert.title, 0, alert.title.length, widgetPrimaryPaint, availW.toInt().coerceAtLeast(1))
-                    .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-                    .setMaxLines(2)
-                    .setEllipsize(TextUtils.TruncateAt.END)
-                    .setIncludePad(false)
-                    .setLineSpacing(0f, 1.12f)
-                    .build()
-                val textTop = contentBox.top + heroH * 0.38f + bodyDy
-                canvas.save()
-                canvas.translate(textLeft, textTop)
-                staticLayout.draw(canvas)
-                canvas.restore()
+                val cleanBody = alert.body?.takeIf { it.isNotBlank() && !it.equals(alert.title, ignoreCase = true) }
+                val titleMatchesApp = alert.title.equals(alert.appLabel, ignoreCase = true)
+                if (cleanBody != null && !titleMatchesApp) {
+                    // Authentic 2-level iOS StandBy layout: Bold Sender + 2-line luminous preview body
+                    widgetPrimaryPaint.typeface = roundedExtraBold
+                    widgetPrimaryPaint.color = withAlpha(primaryText, combinedBodyAlpha)
+                    widgetPrimaryPaint.textSize = (heroH * 0.145f).coerceIn(20f, 66f)
+                    val clippedSender = TextUtils.ellipsize(alert.title, widgetPrimaryPaint, availW, TextUtils.TruncateAt.END).toString()
+                    val senderBaseline = contentBox.top + heroH * 0.48f + bodyDy
+                    canvas.drawText(clippedSender, textLeft, senderBaseline, widgetPrimaryPaint)
+
+                    widgetSecondaryPaint.typeface = roundedBold
+                    widgetSecondaryPaint.color = withAlpha(secondaryText, combinedBodyAlpha * 0.96f)
+                    widgetSecondaryPaint.textSize = (heroH * 0.112f).coerceIn(16f, 50f)
+                    val bodyLayout = StaticLayout.Builder
+                        .obtain(cleanBody, 0, cleanBody.length, widgetSecondaryPaint, availW.toInt().coerceAtLeast(1))
+                        .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+                        .setMaxLines(2)
+                        .setEllipsize(TextUtils.TruncateAt.END)
+                        .setIncludePad(false)
+                        .setLineSpacing(0f, 1.15f)
+                        .build()
+                    canvas.save()
+                    canvas.translate(textLeft, contentBox.top + heroH * 0.54f + bodyDy * 1.15f)
+                    bodyLayout.draw(canvas)
+                    canvas.restore()
+                } else {
+                    // Single hero message (uses body if title just repeated app name, e.g. WeChat "你有一条新消息")
+                    val displayText = if (titleMatchesApp && cleanBody != null) cleanBody else alert.title
+                    widgetPrimaryPaint.typeface = roundedExtraBold
+                    widgetPrimaryPaint.color = withAlpha(primaryText, combinedBodyAlpha)
+                    val baseSize = (heroH * 0.165f).coerceIn(22f, 78f)
+                    widgetPrimaryPaint.textSize = baseSize
+                    val staticLayout = StaticLayout.Builder
+                        .obtain(displayText, 0, displayText.length, widgetPrimaryPaint, availW.toInt().coerceAtLeast(1))
+                        .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+                        .setMaxLines(2)
+                        .setEllipsize(TextUtils.TruncateAt.END)
+                        .setIncludePad(false)
+                        .setLineSpacing(0f, 1.12f)
+                        .build()
+                    val textTop = contentBox.top + heroH * 0.38f + bodyDy
+                    canvas.save()
+                    canvas.translate(textLeft, textTop)
+                    staticLayout.draw(canvas)
+                    canvas.restore()
+                }
             }
         }
 
@@ -3042,6 +3073,7 @@ class ClockView @JvmOverloads constructor(
 
     private fun loadAppIcon(packageName: String?): Drawable? {
         if (packageName.isNullOrBlank()) return null
+        LumaNotificationListener.appIconFor(packageName)?.let { return it }
         if (appIconCache.containsKey(packageName)) return appIconCache[packageName]
         val icon = runCatching { context.packageManager.getApplicationIcon(packageName) }.getOrNull()
         if (appIconCache.size >= 8) {

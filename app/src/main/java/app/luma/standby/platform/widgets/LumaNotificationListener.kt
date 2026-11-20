@@ -6,6 +6,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.drawable.Drawable
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
@@ -15,9 +16,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * Event-fed, sanitized, process-memory-only notification snapshot. No body text,
- * notification Bundles, disk cache or recurring activeNotifications query.
- * The collector explicitly opts in. Locked/disabled/disconnected sources erase it.
+ * Event-fed, sanitized, process-memory-only notification snapshot. No notification
+ * Bundles, disk cache or recurring activeNotifications query. When unlocked and the
+ * user opts into previews, a short single-line message snippet is held in RAM only
+ * while Standby is visible. Locked/disabled/disconnected sources erase everything.
  */
 class LumaNotificationListener : NotificationListenerService() {
     override fun onListenerConnected() = synchronized(monitor) {
@@ -31,6 +33,7 @@ class LumaNotificationListener : NotificationListenerService() {
         if (active === this) {
             active = null
             snapshot.clear()
+            iconCache.clear()
             changed()
         }
     }
@@ -70,8 +73,13 @@ class LumaNotificationListener : NotificationListenerService() {
         synchronized(monitor) {
             if (active !== this) return
             guardedUpdate {
+                val allowUnlockedPreview = previewEnabled && SensitiveWidgetAccess.isUnlocked(this)
                 for (key in snapshot.keys()) {
-                    snapshot.restrictVisibility(key, rankingVisibility(key, rankingMap))
+                    snapshot.restrictVisibility(
+                        key = key,
+                        visibilityOverride = rankingVisibility(key, rankingMap),
+                        allowUnlockedPreview = allowUnlockedPreview,
+                    )
                 }
             }
             changed()
@@ -115,21 +123,48 @@ class LumaNotificationListener : NotificationListenerService() {
         // Replacements must remove a previously-public cached title even if now omitted.
         snapshot.removed(sbn.key)
         if (mode == NotificationTitleMode.OMIT) return
-        val label = try {
-            val appInfo = packageManager.getApplicationInfo(sbn.packageName, 0)
-            packageManager.getApplicationLabel(appInfo).toString()
+        val appInfo = try {
+            packageManager.getApplicationInfo(sbn.packageName, 0)
         } catch (_: PackageManager.NameNotFoundException) {
             return
         }
+        val label = packageManager.getApplicationLabel(appInfo).toString()
+        cacheIcon(sbn.packageName) { packageManager.getApplicationIcon(appInfo) }
+
+        val allowUnlockedPreview = previewEnabled &&
+            visibility != NotificationVisibility.SECRET &&
+            SensitiveWidgetAccess.isUnlocked(this)
+
+        val effectiveMode = if (allowUnlockedPreview && mode == NotificationTitleMode.APP_LABEL) {
+            NotificationTitleMode.PUBLIC_TITLE
+        } else {
+            mode
+        }
+
         val info = NotificationPrivacyPolicy.info(
-            mode = mode,
+            mode = effectiveMode,
             appLabel = label,
             packageName = sbn.packageName,
             postTimeMillis = sbn.postTime,
             key = sbn.key,
         ) {
-            // ONLY public title; never EXTRA_TEXT, BIG_TEXT, MESSAGES or publicVersion extras.
             notification.extras?.getCharSequence(Notification.EXTRA_TITLE)
+        }?.let { base ->
+            if (!allowUnlockedPreview) {
+                base
+            } else {
+                val rawBody = listOf(
+                    notification.extras?.getCharSequence(Notification.EXTRA_TEXT),
+                    notification.extras?.getCharSequence(Notification.EXTRA_BIG_TEXT),
+                ).firstNotNullOfOrNull { cs ->
+                    cs?.toString()
+                        ?.replace(Regex("[\r\n\t]+"), " ")
+                        ?.trim()
+                        ?.take(160)
+                        ?.ifEmpty { null }
+                }
+                base.copy(body = rawBody)
+            }
         }
         snapshot.posted(sbn.key, sbn.postTime, info, visibility)
     }
@@ -146,13 +181,29 @@ class LumaNotificationListener : NotificationListenerService() {
         private val monitor = Any()
         private var active: LumaNotificationListener? = null
         private var collectionEnabled = false
+        private var previewEnabled = false
         private val snapshot = NotificationMemorySnapshot()
+        private val iconCache = LinkedHashMap<String, Drawable>(8, 0.75f, true)
         private val mutableChanges = MutableStateFlow(0L)
         val changes: StateFlow<Long> = mutableChanges.asStateFlow()
 
         const val MAX_NOTIFICATIONS = 5
 
         private fun changed() { mutableChanges.value += 1 }
+
+        private fun cacheIcon(pkg: String, loader: () -> Drawable) {
+            if (iconCache.containsKey(pkg)) return
+            val drawable = runCatching { loader() }.getOrNull() ?: return
+            if (iconCache.size >= 8) {
+                iconCache.keys.firstOrNull()?.let(iconCache::remove)
+            }
+            iconCache[pkg] = drawable
+        }
+
+        /** In-memory launcher icon captured by the bound NotificationListenerService. */
+        fun appIconFor(packageName: String?): Drawable? = synchronized(monitor) {
+            if (!collectionEnabled || packageName.isNullOrBlank()) null else iconCache[packageName]
+        }
 
         internal fun componentName(context: Context): ComponentName =
             ComponentName(context, LumaNotificationListener::class.java)
@@ -167,10 +218,21 @@ class LumaNotificationListener : NotificationListenerService() {
             false
         }
 
+        fun setPreviewEnabled(enabled: Boolean) = synchronized(monitor) {
+            if (previewEnabled == enabled) return@synchronized
+            previewEnabled = enabled
+            if (collectionEnabled) {
+                snapshot.clear()
+                active?.seedOnce()
+                changed()
+            }
+        }
+
         fun setCollectionEnabled(enabled: Boolean) = synchronized(monitor) {
             if (collectionEnabled == enabled) return@synchronized
             collectionEnabled = enabled
             snapshot.setEnabled(enabled)
+            if (!enabled) iconCache.clear()
             if (enabled) active?.seedOnce()
             changed()
         }

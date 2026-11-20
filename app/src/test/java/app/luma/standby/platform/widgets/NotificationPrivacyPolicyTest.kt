@@ -94,6 +94,37 @@ class NotificationPrivacyPolicyTest {
         assertTrue(memory.latest(5).isEmpty())
     }
 
+    @Test fun unlockedPreviewPreservesSenderAndBodyAcrossPrivateRankingButStillOmitsSecret() {
+        val memory = NotificationMemorySnapshot()
+        memory.setEnabled(true)
+        memory.posted(
+            key = "wechat-1",
+            postTime = 10L,
+            info = NotificationInfo("微信", "产品设计群", body = "张三：马上开始评审"),
+            visibility = NotificationVisibility.PRIVATE,
+        )
+        memory.restrictVisibility("wechat-1", NotificationVisibility.PRIVATE, allowUnlockedPreview = true)
+        val preserved = memory.latest(5).single()
+        assertEquals("产品设计群", preserved.title)
+        assertEquals("张三：马上开始评审", preserved.body)
+
+        // Turning preview off redacts private title and strips body.
+        memory.restrictVisibility("wechat-1", NotificationVisibility.PRIVATE, allowUnlockedPreview = false)
+        val redacted = memory.latest(5).single()
+        assertEquals("微信", redacted.title)
+        assertNull(redacted.body)
+
+        // SECRET visibility is always omitted even when unlocked preview is enabled.
+        memory.posted(
+            key = "secret-1",
+            postTime = 20L,
+            info = NotificationInfo("微信", "私密", body = "验证码"),
+            visibility = NotificationVisibility.PRIVATE,
+        )
+        memory.restrictVisibility("secret-1", NotificationVisibility.SECRET, allowUnlockedPreview = true)
+        assertEquals(listOf("微信"), memory.latest(5).map { it.title })
+    }
+
     @Test fun snapshotIsBoundedAndClearDropsAllEntries() {
         val memory = NotificationMemorySnapshot(capacity = 2)
         memory.setEnabled(true)

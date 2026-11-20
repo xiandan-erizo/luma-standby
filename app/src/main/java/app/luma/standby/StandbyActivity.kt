@@ -36,6 +36,7 @@ import app.luma.standby.platform.display.DisplayController
 import app.luma.standby.platform.display.RefreshRatePolicy
 import app.luma.standby.platform.display.RefreshState
 import app.luma.standby.platform.power.PowerController
+import app.luma.standby.platform.widgets.HeadsUpSuppressor
 import app.luma.standby.platform.widgets.LumaNotificationListener
 import app.luma.standby.platform.widgets.WeatherStore
 import app.luma.standby.platform.widgets.WidgetDataCollector
@@ -72,6 +73,7 @@ class StandbyActivity : ComponentActivity() {
     private val brightnessController by lazy { BrightnessController(this) }
     private val widgetCollector by lazy { WidgetDataCollector(this) }
     private val weatherStore by lazy { WeatherStore(this) }
+    private val headsUpSuppressor by lazy { HeadsUpSuppressor(this) }
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val returnToIdle = Runnable { applyRefreshIntent(baselineState()) }
@@ -93,10 +95,12 @@ class StandbyActivity : ComponentActivity() {
     private val screenEvents = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == Intent.ACTION_SCREEN_OFF) {
+                headsUpSuppressor.restore()
                 clearSensitiveState()
             } else {
                 if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
                     applySettings(settings)
+                    syncHeadsUpSuppression()
                     refreshWidgets()
                 }
             }
@@ -130,6 +134,7 @@ class StandbyActivity : ComponentActivity() {
                         val previousCity = settings.weatherCity
                         settings = latest
                         applySettings(latest)
+                        syncHeadsUpSuppression()
                         applyRefreshIntent(baselineState())
                         refreshWidgets()
                         widgetTicks.tryEmit(Unit)
@@ -154,6 +159,7 @@ class StandbyActivity : ComponentActivity() {
                                 NotificationInfo(
                                     appLabel = previewAlert.appLabel,
                                     title = previewAlert.title,
+                                    body = previewAlert.body,
                                     packageName = previewAlert.packageName,
                                     postTimeMillis = System.currentTimeMillis(),
                                 ),
@@ -273,12 +279,14 @@ class StandbyActivity : ComponentActivity() {
         super.onResume()
         hideSystemBars()
         clockView.resumeTicking()
+        syncHeadsUpSuppression()
         enterInteractive(flashHint = false)
     }
 
     override fun onPause() {
         mainHandler.removeCallbacks(returnToIdle)
         clockView.pauseTicking()
+        headsUpSuppressor.restore()
         clearSensitiveState()
         // The brightness override is window-scoped, but clear it explicitly so a
         // re-shown window never inherits a stale night value.
@@ -289,6 +297,7 @@ class StandbyActivity : ComponentActivity() {
     override fun onDestroy() {
         mainHandler.removeCallbacks(returnToIdle)
         mainHandler.removeCallbacks(dismissAlertRunnable)
+        headsUpSuppressor.restore()
         stopObservingBattery?.invoke()
         stopObservingBattery = null
         if (receiverRegistered) unregisterReceiver(screenEvents)
@@ -296,11 +305,23 @@ class StandbyActivity : ComponentActivity() {
         super.onDestroy()
     }
 
+    private fun syncHeadsUpSuppression() {
+        if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
+            settings.notificationAlerts &&
+            settings.suppressSystemHeadsUp
+        ) {
+            headsUpSuppressor.suppress()
+        } else {
+            headsUpSuppressor.restore()
+        }
+    }
+
     private fun clearSensitiveState() {
         mainHandler.removeCallbacks(dismissAlertRunnable)
         activeAlert = null
         latestNotifications = emptyList()
         alertTracker.reset()
+        LumaNotificationListener.setPreviewEnabled(false)
         LumaNotificationListener.setCollectionEnabled(false)
         clockView.setWidgets(emptyList())
         clockView.clearSensitiveMemory()
@@ -356,6 +377,7 @@ class StandbyActivity : ComponentActivity() {
             enabledIds = enabled,
             weather = weather,
             notificationAlertsEnabled = alertsWanted,
+            notificationPreviewEnabled = settings.notificationPreview,
         )
         clockView.setWidgets(WidgetRenderer.tiles(settings, data, context = this))
 
@@ -398,10 +420,11 @@ class StandbyActivity : ComponentActivity() {
     }
 
     private fun buildAlert(info: NotificationInfo, count: Int): StandbyNotificationAlert {
-        val redacted = info.title.equals(info.appLabel, ignoreCase = true)
+        val redacted = info.title.equals(info.appLabel, ignoreCase = true) && info.body.isNullOrBlank()
         return StandbyNotificationAlert(
             appLabel = info.appLabel,
             title = info.title,
+            body = info.body,
             packageName = info.packageName,
             unreadCount = count,
             tapToReveal = settings.notificationTapToReveal,

@@ -1,5 +1,6 @@
 package app.luma.standby
 
+import android.app.NotificationManager
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -18,6 +19,7 @@ import app.luma.standby.domain.widget.NotificationInfo
 import app.luma.standby.domain.widget.WeatherCondition
 import app.luma.standby.domain.widget.WeatherInfo
 import app.luma.standby.domain.widget.WidgetData
+import app.luma.standby.platform.widgets.HeadsUpPolicyMath
 import app.luma.standby.platform.widgets.WidgetRenderer
 import app.luma.standby.ui.clock.ClockView
 import app.luma.standby.ui.clock.FaceLayout
@@ -110,7 +112,7 @@ class StandbyFaceRenderTest {
         assertTrue("Solar Liquid Glass draws pixels", countNonBlack(solarBmp) > 50_000)
         savePng(solarBmp, File(snapshotDir, "06_solar_liquid_glass.png"))
 
-        // 7. Full-Screen iOS StandBy Notification Alert (public title)
+        // 7. Full-Screen iOS StandBy Notification Alert (2-level Sender + Preview Body)
         val alertBmp = renderClock(
             width = 1600,
             height = 720,
@@ -118,7 +120,8 @@ class StandbyFaceRenderTest {
             tiles = emptyList(),
             alert = StandbyNotificationAlert(
                 appLabel = "微信",
-                title = "产品设计群：10 分钟后评审新版表盘",
+                title = "产品设计群",
+                body = "张三：10 分钟后评审新版待机表盘，记得带上小米 17",
                 unreadCount = 3,
                 tapToReveal = false,
             ),
@@ -173,6 +176,23 @@ class StandbyFaceRenderTest {
         assertNull(tracker.onSnapshot(listOf(newer, initial.first())))
         // Clearing resets active entries cleanly.
         assertNull(tracker.onSnapshot(emptyList()))
+    }
+
+    @Test
+    fun headsUpPolicySuppressesOnlyPeekAndPreservesStricterUserDnd() {
+        assertEquals(
+            NotificationManager.INTERRUPTION_FILTER_PRIORITY,
+            HeadsUpPolicyMath.targetFilter(NotificationManager.INTERRUPTION_FILTER_ALL),
+        )
+        assertEquals(
+            NotificationManager.INTERRUPTION_FILTER_NONE,
+            HeadsUpPolicyMath.targetFilter(NotificationManager.INTERRUPTION_FILTER_NONE),
+        )
+        val merged = HeadsUpPolicyMath.suppressedVisualEffects(NotificationManager.Policy.SUPPRESSED_EFFECT_BADGE)
+        assertTrue(merged and NotificationManager.Policy.SUPPRESSED_EFFECT_PEEK != 0)
+        assertTrue(merged and NotificationManager.Policy.SUPPRESSED_EFFECT_BADGE != 0)
+        assertTrue(HeadsUpPolicyMath.ALL_AUDIBLE_CATEGORIES and NotificationManager.Policy.PRIORITY_CATEGORY_ALARMS != 0)
+        assertTrue(HeadsUpPolicyMath.ALL_AUDIBLE_CATEGORIES and NotificationManager.Policy.PRIORITY_CATEGORY_CALLS != 0)
     }
 
     @Test
