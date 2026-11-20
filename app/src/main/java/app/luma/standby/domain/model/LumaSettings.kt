@@ -35,6 +35,7 @@ data class LumaSettings(
     val notificationPreview: Boolean = true,
     val notificationTapToReveal: Boolean = false,
     val suppressSystemHeadsUp: Boolean = true,
+    val liveActivities: Boolean = true,
 )
 
 @Serializable

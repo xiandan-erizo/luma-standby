@@ -1,6 +1,8 @@
 package app.luma.standby.platform.widgets
 
 import android.content.Context
+import android.graphics.Bitmap
+import app.luma.standby.domain.widget.LiveActivityInfo
 import app.luma.standby.domain.widget.WeatherInfo
 import app.luma.standby.domain.widget.WidgetData
 
@@ -16,19 +18,28 @@ import app.luma.standby.domain.widget.WidgetData
  */
 class WidgetDataCollector(private val context: Context) {
 
+    data class LiveActivityBundle(
+        val activities: List<LiveActivityInfo> = emptyList(),
+        val musicAlbumArt: Bitmap? = null,
+    )
+
     private val systemSource = SystemWidgetSource(context)
     private val mediaSource = MediaSessionWidgetSource(context)
+
+    fun observeMedia(enabled: Boolean, onChanged: () -> Unit): () -> Unit =
+        mediaSource.observe(enabled, onChanged)
 
     fun collect(
         enabledIds: Set<String>,
         weather: WeatherInfo? = null,
         notificationAlertsEnabled: Boolean = false,
         notificationPreviewEnabled: Boolean = false,
+        liveActivitiesEnabled: Boolean = false,
     ): WidgetData {
         val needsBattery = enabledIds.contains("battery")
         val needsAlarm = enabledIds.contains("alarm")
         val needsNotificationWidget = enabledIds.contains("notification")
-        val needsNotifications = needsNotificationWidget || notificationAlertsEnabled
+        val needsNotifications = needsNotificationWidget || notificationAlertsEnabled || liveActivitiesEnabled
         val needsMedia = enabledIds.contains("media")
         val needsWeather = enabledIds.contains("weather")
 
@@ -36,9 +47,10 @@ class WidgetDataCollector(private val context: Context) {
         val hasAccess = needsSensitiveData && SensitiveWidgetAccess.isUnlocked(context) &&
             LumaNotificationListener.isEnabled(context)
         // Media opt-in never enables notification-title collection.
-        LumaNotificationListener.setPreviewEnabled(notificationPreviewEnabled && needsNotifications && hasAccess)
+        LumaNotificationListener.setPreviewEnabled(notificationPreviewEnabled && (needsNotificationWidget || notificationAlertsEnabled) && hasAccess)
+        LumaNotificationListener.setLiveActivitiesEnabled(liveActivitiesEnabled && hasAccess)
         LumaNotificationListener.setCollectionEnabled(needsNotifications && hasAccess)
-        val notifications = if (needsNotifications && hasAccess) {
+        val notifications = if ((needsNotificationWidget || notificationAlertsEnabled) && hasAccess) {
             LumaNotificationListener.latest(context)
         } else emptyList()
         val media = mediaSource.current(enabled = needsMedia && hasAccess)
@@ -47,7 +59,10 @@ class WidgetDataCollector(private val context: Context) {
         val nextAlarm = if (needsAlarm) systemSource.nextAlarm() else null
         val mayPublishSensitive = hasAccess && SensitiveWidgetAccess.isUnlocked(context) &&
             LumaNotificationListener.isEnabled(context)
-        if (!mayPublishSensitive) LumaNotificationListener.setCollectionEnabled(false)
+        if (!mayPublishSensitive) {
+            LumaNotificationListener.setLiveActivitiesEnabled(false)
+            LumaNotificationListener.setCollectionEnabled(false)
+        }
 
         return WidgetData(
             battery = battery,
@@ -55,6 +70,28 @@ class WidgetDataCollector(private val context: Context) {
             weather = if (needsWeather) weather else null,
             notifications = if (mayPublishSensitive) notifications else emptyList(),
             media = if (mayPublishSensitive) media else null,
+        )
+    }
+
+    /**
+     * Collects active Xiaomi Super Islands, Android 16 Live Updates, and live Music
+     * playback (merged cleanly: journeys/super-islands first, then active music).
+     */
+    fun collectLiveActivities(enabled: Boolean): LiveActivityBundle {
+        if (!enabled || !SensitiveWidgetAccess.isUnlocked(context) || !LumaNotificationListener.isEnabled(context)) {
+            return LiveActivityBundle()
+        }
+        val fromNotifications = LumaNotificationListener.latestLiveActivities(context)
+        val music = mediaSource.currentLiveActivity(enabled = true)
+        val merged = buildList {
+            addAll(fromNotifications)
+            if (music != null && fromNotifications.none { it.isPlayingMedia || it.packageName == music.activity.packageName && it.business == "media" }) {
+                add(music.activity)
+            }
+        }
+        return LiveActivityBundle(
+            activities = merged,
+            musicAlbumArt = music?.albumArt,
         )
     }
 }

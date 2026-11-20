@@ -202,4 +202,10 @@
     <string name="alerts_suppress_headsup">Hide system floating banner in StandBy</string>
     <string name="alerts_dnd_needed">Needs Do Not Disturb access (restores automatically on exit)</string>
     <string name="alerts_dnd_granted">Do Not Disturb access granted</string>
+    <string name="alerts_live_island">Dynamic Island / Super Island</string>
+    <string name="alerts_live_island_sub">Live delivery, ride, flight, timer &amp; music pill at top</string>
+    <string name="island_live_badge">Live Activity</string>
+    <string name="island_now_playing">Now Playing</string>
+    <string name="island_collapse">Collapse</string>
+    <string name="island_switch">%1$d/%2$d</string>
 </resources>

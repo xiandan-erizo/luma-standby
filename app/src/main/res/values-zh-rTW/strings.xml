@@ -202,4 +202,10 @@
     <string name="alerts_suppress_headsup">待機時隱藏系統懸浮橫幅</string>
     <string name="alerts_dnd_needed">需要勿擾權限（僅隱藏橫幅不靜音，離開待機自動還原）</string>
     <string name="alerts_dnd_granted">已授予勿擾權限</string>
+    <string name="alerts_live_island">靈動島 / 小米超級島</string>
+    <string name="alerts_live_island_sub">頂部展示外送、叫車、航班、倒數計時與播放中音樂</string>
+    <string name="island_live_badge">即時動態</string>
+    <string name="island_now_playing">現正播放</string>
+    <string name="island_collapse">收合</string>
+    <string name="island_switch">%1$d/%2$d</string>
 </resources>

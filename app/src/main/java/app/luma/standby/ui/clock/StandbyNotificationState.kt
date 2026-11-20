@@ -1,5 +1,6 @@
 package app.luma.standby.ui.clock
 
+import app.luma.standby.domain.widget.LiveActivityInfo
 import app.luma.standby.domain.widget.NotificationInfo
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -10,6 +11,20 @@ internal object DebugAlertBus {
     val alerts = mutable.asSharedFlow()
     fun emit(alert: StandbyNotificationAlert) {
         mutable.tryEmit(alert)
+    }
+}
+
+/** In-memory only debug Super Island / Live Activity channel (FLAG_DEBUGGABLE only). */
+internal object DebugIslandBus {
+    data class DebugIslandPayload(
+        val activities: List<LiveActivityInfo>,
+        val expandImmediately: Boolean = false,
+    )
+
+    private val mutable = MutableSharedFlow<DebugIslandPayload>(extraBufferCapacity = 2)
+    val payloads = mutable.asSharedFlow()
+    fun emit(payload: DebugIslandPayload) {
+        mutable.tryEmit(payload)
     }
 }
 

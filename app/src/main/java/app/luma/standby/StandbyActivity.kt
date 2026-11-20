@@ -29,6 +29,7 @@ import app.luma.standby.domain.theme.PalettePresets
 import app.luma.standby.domain.theme.ThemeEditing
 import app.luma.standby.domain.theme.ThemeRepository
 import app.luma.standby.domain.theme.currentTheme
+import app.luma.standby.domain.widget.LiveActivityInfo
 import app.luma.standby.domain.widget.NotificationInfo
 import app.luma.standby.platform.battery.BatteryController
 import app.luma.standby.platform.display.BrightnessController
@@ -44,6 +45,7 @@ import app.luma.standby.platform.widgets.WidgetRenderer
 import app.luma.standby.ui.clock.AlertExitMode
 import app.luma.standby.ui.clock.ClockView
 import app.luma.standby.ui.clock.DebugAlertBus
+import app.luma.standby.ui.clock.DebugIslandBus
 import app.luma.standby.ui.clock.StandbyAlertTracker
 import app.luma.standby.ui.clock.StandbyNotificationAlert
 import app.luma.standby.ui.clock.UnreadNotificationSummary
@@ -81,16 +83,21 @@ class StandbyActivity : ComponentActivity() {
     private val dismissAlertRunnable = Runnable { dismissNotificationAlert() }
 
     private var stopObservingBattery: (() -> Unit)? = null
+    private var stopObservingMedia: (() -> Unit)? = null
     private var settings: LumaSettings = LumaSettings()
     private var lastTapAt = 0L
     private var touchDownX = 0f
     private var touchDownY = 0f
     private var touchDownOnUnreadPill = false
+    private var touchDownOnLiveIsland = false
     private var swipeConsumed = false
 
     private val alertTracker = StandbyAlertTracker()
     private var activeAlert: StandbyNotificationAlert? = null
     private var latestNotifications: List<NotificationInfo> = emptyList()
+    private var liveActivities: List<LiveActivityInfo> = emptyList()
+    private var selectedLiveIndex: Int = 0
+    private var expandedLiveActivity: LiveActivityInfo? = null
 
     private val widgetTicks = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     private var receiverRegistered = false
@@ -103,6 +110,7 @@ class StandbyActivity : ComponentActivity() {
                 if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
                     applySettings(settings)
                     syncHeadsUpSuppression()
+                    syncMediaObserver()
                     refreshWidgets()
                 }
             }
@@ -137,6 +145,7 @@ class StandbyActivity : ComponentActivity() {
                         settings = latest
                         applySettings(latest)
                         syncHeadsUpSuppression()
+                        syncMediaObserver()
                         applyRefreshIntent(baselineState())
                         refreshWidgets()
                         widgetTicks.tryEmit(Unit)
@@ -177,6 +186,18 @@ class StandbyActivity : ComponentActivity() {
                             showNotificationAlert(previewAlert.copy(key = latestNotifications.first().key))
                         }
                     }
+                    launch {
+                        DebugIslandBus.payloads.collect { payload ->
+                            liveActivities = payload.activities
+                            selectedLiveIndex = 0
+                            clockView.setLiveActivities(payload.activities, albumArt = null, selectedIndex = 0)
+                            if (payload.expandImmediately && payload.activities.isNotEmpty()) {
+                                expandCurrentLiveActivity()
+                            } else if (payload.activities.isEmpty()) {
+                                collapseLiveActivity()
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -187,13 +208,16 @@ class StandbyActivity : ComponentActivity() {
                 MotionEvent.ACTION_DOWN -> {
                     touchDownX = event.x
                     touchDownY = event.y
-                    touchDownOnUnreadPill = activeAlert == null && clockView.hitTestUnreadPill(event.x, event.y)
+                    touchDownOnUnreadPill = activeAlert == null && expandedLiveActivity == null &&
+                        clockView.hitTestUnreadPill(event.x, event.y)
+                    touchDownOnLiveIsland = activeAlert == null && expandedLiveActivity == null &&
+                        !touchDownOnUnreadPill && clockView.hitTestLiveIslandPill(event.x, event.y)
                     swipeConsumed = false
                     enterInteractive(flashHint = false)
                 }
 
                 MotionEvent.ACTION_MOVE -> {
-                    if (!touchDownOnUnreadPill) {
+                    if (!touchDownOnUnreadPill && !touchDownOnLiveIsland) {
                         val dx = event.x - touchDownX
                         val dy = event.y - touchDownY
                         if (abs(dx) > 12f || abs(dy) > 12f) {
@@ -204,6 +228,7 @@ class StandbyActivity : ComponentActivity() {
 
                 MotionEvent.ACTION_CANCEL -> {
                     touchDownOnUnreadPill = false
+                    touchDownOnLiveIsland = false
                     clockView.releaseInteractiveDrag()
                 }
 
@@ -213,8 +238,11 @@ class StandbyActivity : ComponentActivity() {
                     val absDx = abs(dx)
                     val absDy = abs(dy)
                     val currentAlert = activeAlert
+                    val currentExpandedLive = expandedLiveActivity
                     val startedOnUnreadPill = touchDownOnUnreadPill
+                    val startedOnLiveIsland = touchDownOnLiveIsland
                     touchDownOnUnreadPill = false
+                    touchDownOnLiveIsland = false
 
                     if (currentAlert != null) {
                         // Notification takeover is visible:
@@ -247,6 +275,45 @@ class StandbyActivity : ComponentActivity() {
                         } else {
                             clockView.releaseInteractiveDrag()
                         }
+                    } else if (currentExpandedLive != null) {
+                        // Expanded Dynamic Island / Super Island card:
+                        // - Swipe left/right cycles between active islands (or collapses if single).
+                        // - Swipe up or tap collapses smoothly back into top Dynamic Island pill.
+                        if (absDx > SWIPE_THRESHOLD_PX && absDx > absDy * 1.15f) {
+                            swipeConsumed = true
+                            lastTapAt = 0L
+                            clockView.releaseInteractiveDrag()
+                            if (liveActivities.size > 1) {
+                                cycleLiveActivity(step = if (dx < 0f) 1 else -1, keepExpanded = true)
+                            } else {
+                                collapseLiveActivity()
+                            }
+                        } else if (absDy > SWIPE_THRESHOLD_PX) {
+                            swipeConsumed = true
+                            lastTapAt = 0L
+                            collapseLiveActivity()
+                        } else if (absDx < TAP_SLOP_PX && absDy < TAP_SLOP_PX) {
+                            clockView.releaseInteractiveDrag()
+                            lastTapAt = 0L
+                            when {
+                                clockView.hitTestLiveCardCycle(event.x, event.y) ->
+                                    cycleLiveActivity(step = 1, keepExpanded = true)
+                                clockView.hitTestLiveCardCollapse(event.x, event.y) ->
+                                    collapseLiveActivity()
+                                else ->
+                                    collapseLiveActivity()
+                            }
+                        } else {
+                            clockView.releaseInteractiveDrag()
+                        }
+                    } else if (startedOnLiveIsland) {
+                        lastTapAt = 0L
+                        if (absDx > SWIPE_THRESHOLD_PX && liveActivities.size > 1) {
+                            swipeConsumed = true
+                            cycleLiveActivity(step = if (dx < 0f) 1 else -1, keepExpanded = false)
+                        } else if (absDx < TAP_SLOP_PX && absDy < TAP_SLOP_PX) {
+                            expandCurrentLiveActivity()
+                        }
                     } else if (startedOnUnreadPill) {
                         lastTapAt = 0L
                         if (absDx > SWIPE_THRESHOLD_PX || absDy > SWIPE_THRESHOLD_PX) {
@@ -266,18 +333,25 @@ class StandbyActivity : ComponentActivity() {
                         cycleIosPalette(step = if (dx < 0f) 1 else -1)
                     } else if (!swipeConsumed && absDx < TAP_SLOP_PX && absDy < TAP_SLOP_PX) {
                         clockView.releaseInteractiveDrag()
-                        if (clockView.hitTestUnreadPill(event.x, event.y)) {
-                            lastTapAt = 0L
-                            openLatestNotificationAlert()
-                        } else {
-                            val now = event.eventTime
-                            if (now - lastTapAt <= DOUBLE_TAP_WINDOW_MS) {
+                        when {
+                            clockView.hitTestLiveIslandPill(event.x, event.y) -> {
                                 lastTapAt = 0L
-                                clockView.performClick()
-                                finish()
-                            } else {
-                                lastTapAt = now
-                                clockView.flashHint()
+                                expandCurrentLiveActivity()
+                            }
+                            clockView.hitTestUnreadPill(event.x, event.y) -> {
+                                lastTapAt = 0L
+                                openLatestNotificationAlert()
+                            }
+                            else -> {
+                                val now = event.eventTime
+                                if (now - lastTapAt <= DOUBLE_TAP_WINDOW_MS) {
+                                    lastTapAt = 0L
+                                    clockView.performClick()
+                                    finish()
+                                } else {
+                                    lastTapAt = now
+                                    clockView.flashHint()
+                                }
                             }
                         }
                     } else {
@@ -311,6 +385,7 @@ class StandbyActivity : ComponentActivity() {
         hideSystemBars()
         clockView.resumeTicking()
         syncHeadsUpSuppression()
+        syncMediaObserver()
         enterInteractive(flashHint = false)
     }
 
@@ -318,6 +393,8 @@ class StandbyActivity : ComponentActivity() {
         mainHandler.removeCallbacks(returnToIdle)
         clockView.pauseTicking()
         headsUpSuppressor.restore()
+        stopObservingMedia?.invoke()
+        stopObservingMedia = null
         clearSensitiveState()
         // The brightness override is window-scoped, but clear it explicitly so a
         // re-shown window never inherits a stale night value.
@@ -329,6 +406,8 @@ class StandbyActivity : ComponentActivity() {
         mainHandler.removeCallbacks(returnToIdle)
         mainHandler.removeCallbacks(dismissAlertRunnable)
         headsUpSuppressor.restore()
+        stopObservingMedia?.invoke()
+        stopObservingMedia = null
         stopObservingBattery?.invoke()
         stopObservingBattery = null
         if (receiverRegistered) unregisterReceiver(screenEvents)
@@ -347,12 +426,31 @@ class StandbyActivity : ComponentActivity() {
         }
     }
 
+    private fun syncMediaObserver() {
+        stopObservingMedia?.invoke()
+        stopObservingMedia = null
+        val wantMedia = lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
+            settings.mode != DisplayMode.ULTRA_LOW_POWER &&
+            (settings.liveActivities || settings.widgetPlacements.any { it.widgetId == "media" })
+        if (wantMedia) {
+            stopObservingMedia = widgetCollector.observeMedia(enabled = true) {
+                refreshWidgets()
+            }
+        }
+    }
+
     private fun clearSensitiveState() {
         mainHandler.removeCallbacks(dismissAlertRunnable)
+        stopObservingMedia?.invoke()
+        stopObservingMedia = null
         activeAlert = null
         latestNotifications = emptyList()
+        liveActivities = emptyList()
+        selectedLiveIndex = 0
+        expandedLiveActivity = null
         alertTracker.reset()
         LumaNotificationListener.setPreviewEnabled(false)
+        LumaNotificationListener.setLiveActivitiesEnabled(false)
         LumaNotificationListener.setCollectionEnabled(false)
         clockView.setWidgets(emptyList())
         clockView.clearSensitiveMemory()
@@ -395,11 +493,16 @@ class StandbyActivity : ComponentActivity() {
         if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return
         val enabled = settings.widgetPlacements.map { it.widgetId }.toSet()
         val alertsWanted = settings.notificationAlerts && settings.mode != DisplayMode.ULTRA_LOW_POWER
+        val liveWanted = settings.liveActivities && settings.mode != DisplayMode.ULTRA_LOW_POWER
 
-        if (enabled.isEmpty() && !alertsWanted) {
+        if (enabled.isEmpty() && !alertsWanted && !liveWanted) {
+            LumaNotificationListener.setLiveActivitiesEnabled(false)
             LumaNotificationListener.setCollectionEnabled(false)
+            liveActivities = emptyList()
+            expandedLiveActivity = null
             clockView.setWidgets(emptyList())
             clockView.setUnreadSummary(null)
+            clockView.setLiveActivities(emptyList())
             return
         }
 
@@ -409,8 +512,30 @@ class StandbyActivity : ComponentActivity() {
             weather = weather,
             notificationAlertsEnabled = alertsWanted,
             notificationPreviewEnabled = settings.notificationPreview,
+            liveActivitiesEnabled = liveWanted,
         )
         clockView.setWidgets(WidgetRenderer.tiles(settings, data, context = this))
+
+        if (liveWanted) {
+            val bundle = widgetCollector.collectLiveActivities(enabled = true)
+            liveActivities = bundle.activities
+            selectedLiveIndex = if (bundle.activities.isEmpty()) 0 else selectedLiveIndex.coerceIn(0, bundle.activities.lastIndex)
+            clockView.setLiveActivities(bundle.activities, bundle.musicAlbumArt, selectedLiveIndex)
+            val currentExp = expandedLiveActivity
+            if (currentExp != null) {
+                val updated = bundle.activities.firstOrNull { it.key == currentExp.key }
+                if (updated != null) {
+                    expandedLiveActivity = updated
+                } else {
+                    collapseLiveActivity()
+                }
+            }
+        } else {
+            liveActivities = emptyList()
+            selectedLiveIndex = 0
+            collapseLiveActivity()
+            clockView.setLiveActivities(emptyList())
+        }
 
         if (alertsWanted) {
             handleNotificationSnapshot(data.notifications)
@@ -447,7 +572,39 @@ class StandbyActivity : ComponentActivity() {
 
     private fun openLatestNotificationAlert() {
         val top = latestNotifications.firstOrNull() ?: return
+        collapseLiveActivity()
         showNotificationAlert(buildAlert(top, latestNotifications.size))
+    }
+
+    private fun expandCurrentLiveActivity() {
+        val target = liveActivities.getOrNull(selectedLiveIndex) ?: liveActivities.firstOrNull() ?: return
+        dismissNotificationAlert(AlertExitMode.TUCK_TO_PILL)
+        expandedLiveActivity = target
+        clockView.setExpandedLiveActivity(target)
+        enterInteractive(flashHint = false)
+    }
+
+    private fun collapseLiveActivity() {
+        if (expandedLiveActivity != null) {
+            expandedLiveActivity = null
+            clockView.setExpandedLiveActivity(null)
+        }
+    }
+
+    private fun cycleLiveActivity(step: Int, keepExpanded: Boolean) {
+        if (liveActivities.size <= 1) return
+        val size = liveActivities.size
+        selectedLiveIndex = ((selectedLiveIndex + step) % size + size) % size
+        val target = liveActivities[selectedLiveIndex]
+        val art = if (target.isPlayingMedia) {
+            widgetCollector.collectLiveActivities(enabled = true).musicAlbumArt
+        } else null
+        clockView.setLiveActivities(liveActivities, art, selectedLiveIndex)
+        if (keepExpanded) {
+            expandedLiveActivity = target
+            clockView.setExpandedLiveActivity(target)
+        }
+        enterInteractive(flashHint = false)
     }
 
     private fun buildAlert(info: NotificationInfo, count: Int): StandbyNotificationAlert {
@@ -466,6 +623,7 @@ class StandbyActivity : ComponentActivity() {
     }
 
     private fun showNotificationAlert(alert: StandbyNotificationAlert) {
+        collapseLiveActivity()
         activeAlert = alert
         clockView.setActiveAlert(alert)
         enterInteractive(flashHint = false)

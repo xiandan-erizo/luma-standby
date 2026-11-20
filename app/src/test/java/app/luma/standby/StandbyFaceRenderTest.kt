@@ -15,6 +15,8 @@ import app.luma.standby.domain.theme.ThemeEditing
 import app.luma.standby.domain.theme.ThemePresets
 import app.luma.standby.domain.widget.AlarmInfo
 import app.luma.standby.domain.widget.BatteryInfo
+import app.luma.standby.domain.widget.LiveActivityInfo
+import app.luma.standby.domain.widget.LiveActivitySource
 import app.luma.standby.domain.widget.NotificationInfo
 import app.luma.standby.domain.widget.WeatherCondition
 import app.luma.standby.domain.widget.WeatherInfo
@@ -257,6 +259,111 @@ class StandbyFaceRenderTest {
         view.setActiveAlert(null, AlertExitMode.FLING_LEFT)
         assertFalse(view.hitTestAlertClear(1000f, 220f))
         assertFalse(view.hitTestAlertClearAll(900f, 220f))
+    }
+
+    @Test
+    fun renderDynamicIslandDualDockAndExpandedSuperIslandSnapshots() {
+        val outDir = File("build/robolectric-home/snapshots").apply { mkdirs() }
+        val meituan = LiveActivityInfo(
+            key = "mt-1",
+            source = LiveActivitySource.XIAOMI_SUPER_ISLAND,
+            appLabel = "美团外卖",
+            packageName = "com.sankuai.meituan.takeoutnew",
+            title = "骑手正在配送中",
+            subtitle = "预计 14:18 送达 · 距离您 300 米",
+            compactText = "骑手距您 300m",
+            highlightMetric = "4 分钟",
+            progress = 0.76f,
+            accentColor = 0xFFFFB000.toInt(),
+            business = "delivery",
+        )
+        val music = LiveActivityInfo(
+            key = "music-1",
+            source = LiveActivitySource.MEDIA_PLAYBACK,
+            appLabel = "QQ 音乐",
+            packageName = "com.tencent.qqmusic",
+            title = "稻香",
+            subtitle = "周杰伦 — 魔杰座",
+            compactText = "稻香 · 周杰伦",
+            highlightMetric = null,
+            progress = 0.48f,
+            accentColor = 0xFFFF375F.toInt(),
+            business = "media",
+            isPlayingMedia = true,
+        )
+
+        // 1. Dual-Island Split Dock: Meituan Super Island + Detached WeChat Unread Bubble
+        val dualView = ClockView(context)
+        dualView.animationsEnabled = false
+        dualView.applyState(ThemePresets.iosCoral, true, false, false, null)
+        dualView.setLiveActivities(listOf(meituan, music))
+        dualView.setUnreadSummary(UnreadNotificationSummary("微信", count = 2))
+        dualView.measure(
+            View.MeasureSpec.makeMeasureSpec(1280, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(590, View.MeasureSpec.EXACTLY),
+        )
+        dualView.layout(0, 0, 1280, 590)
+        val dualBmp = Bitmap.createBitmap(1280, 590, Bitmap.Config.ARGB_8888)
+        dualView.draw(Canvas(dualBmp))
+        savePng(dualBmp, File(outDir, "10_island_docked_dual.png"))
+
+        // Verify both Dynamic Island pill and detached Unread Bubble are independently tappable!
+        var islandHits = 0
+        var bubbleHits = 0
+        for (x in 300..980 step 4) {
+            if (dualView.hitTestLiveIslandPill(x.toFloat(), 40f)) islandHits++
+            if (dualView.hitTestUnreadPill(x.toFloat(), 40f)) bubbleHits++
+        }
+        assertTrue("Expected Dynamic Island pill hit target", islandHits > 10)
+        assertTrue("Expected Detached Unread Bubble hit target", bubbleHits > 5)
+
+        // 2. Expanded Super Island Hero Card (Meituan Delivery)
+        val expView = ClockView(context)
+        expView.animationsEnabled = false
+        expView.applyState(ThemePresets.iosCoral, true, false, false, null)
+        expView.setLiveActivities(listOf(meituan, music))
+        expView.setExpandedLiveActivity(meituan)
+        expView.measure(
+            View.MeasureSpec.makeMeasureSpec(1280, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(590, View.MeasureSpec.EXACTLY),
+        )
+        expView.layout(0, 0, 1280, 590)
+        val expBmp = Bitmap.createBitmap(1280, 590, Bitmap.Config.ARGB_8888)
+        expView.draw(Canvas(expBmp))
+        savePng(expBmp, File(outDir, "11_island_expanded_delivery.png"))
+
+        var collapseHits = 0
+        var cycleHits = 0
+        for (y in 120..290 step 4) {
+            for (x in 650..1130 step 4) {
+                if (expView.hitTestLiveCardCollapse(x.toFloat(), y.toFloat())) collapseHits++
+                if (expView.hitTestLiveCardCycle(x.toFloat(), y.toFloat())) cycleHits++
+            }
+        }
+        assertTrue("Expected Collapse button hit target", collapseHits > 10)
+        assertTrue("Expected 1/2 Switch button hit target", cycleHits > 10)
+
+        // 3. Expanded Live Music Hero Card (with synthetic gradient album art)
+        val art = Bitmap.createBitmap(128, 128, Bitmap.Config.ARGB_8888).apply {
+            val c = Canvas(this)
+            c.drawColor(Color.parseColor("#FF2D55"))
+            val p = android.graphics.Paint().apply { color = Color.parseColor("#FFB347") }
+            c.drawCircle(92f, 36f, 52f, p)
+        }
+        val musicView = ClockView(context)
+        musicView.animationsEnabled = false
+        musicView.applyState(ThemePresets.iosMint, true, false, false, null)
+        musicView.setLiveActivities(listOf(music), albumArt = art)
+        musicView.setExpandedLiveActivity(music)
+        musicView.measure(
+            View.MeasureSpec.makeMeasureSpec(1280, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(590, View.MeasureSpec.EXACTLY),
+        )
+        musicView.layout(0, 0, 1280, 590)
+        val musicBmp = Bitmap.createBitmap(1280, 590, Bitmap.Config.ARGB_8888)
+        musicView.draw(Canvas(musicBmp))
+        savePng(musicBmp, File(outDir, "12_island_expanded_music.png"))
+        assertTrue(countBright(musicBmp) > 8000)
     }
 
     private fun renderClock(

@@ -8,7 +8,11 @@ import app.luma.standby.domain.model.FaceStyle
 import app.luma.standby.domain.model.StoredPlacement
 import app.luma.standby.domain.theme.ThemeEditing
 import app.luma.standby.domain.theme.ThemeRepository
+import app.luma.standby.domain.widget.LiveActivityInfo
+import app.luma.standby.domain.widget.LiveActivitySource
+import app.luma.standby.platform.widgets.XiaomiFocusParser
 import app.luma.standby.ui.clock.DebugAlertBus
+import app.luma.standby.ui.clock.DebugIslandBus
 import app.luma.standby.ui.clock.StandbyNotificationAlert
 import kotlinx.coroutines.runBlocking
 
@@ -120,6 +124,42 @@ class DebugSettingsReceiver : BroadcastReceiver() {
                         isPrivateRedacted = title.equals(appLabel, ignoreCase = true) && body == null,
                     ),
                 )
+            }
+            // In-memory debug-only Xiaomi Super Island / Live Activity preview (never persisted).
+            // Format: "business|appLabel|title|subtitle|compact|metric|progress" (multiple separated by ";;")
+            intent.getStringExtra("mockIsland")?.let { raw ->
+                val expand = intent.getBooleanExtra("mockIslandExpand", false)
+                if (raw.equals("clear", ignoreCase = true) || raw.isBlank()) {
+                    DebugIslandBus.emit(DebugIslandBus.DebugIslandPayload(emptyList(), expandImmediately = false))
+                } else {
+                    val items = raw.split(";;").mapIndexedNotNull { idx, entry ->
+                        val p = entry.split("|")
+                        val biz = p.getOrNull(0)?.trim()?.ifEmpty { null }
+                        val appLabel = p.getOrNull(1)?.trim().orEmpty().ifEmpty { "美团外卖" }
+                        val title = p.getOrNull(2)?.trim().orEmpty().ifEmpty { appLabel }
+                        val subtitle = p.getOrNull(3)?.trim()?.ifEmpty { null }
+                        val compact = p.getOrNull(4)?.trim().orEmpty().ifEmpty { title }
+                        val metric = p.getOrNull(5)?.trim()?.ifEmpty { null }
+                        val progress = p.getOrNull(6)?.trim()?.toFloatOrNull()?.coerceIn(0f, 1f)
+                        val isMedia = biz.equals("media", ignoreCase = true) || biz.equals("music", ignoreCase = true)
+                        LiveActivityInfo(
+                            key = "debug-island-$idx",
+                            source = if (isMedia) LiveActivitySource.MEDIA_PLAYBACK else LiveActivitySource.XIAOMI_SUPER_ISLAND,
+                            appLabel = appLabel,
+                            packageName = intent.getStringExtra("mockIslandPkg"),
+                            title = title,
+                            subtitle = subtitle,
+                            compactText = compact,
+                            highlightMetric = metric,
+                            progress = progress,
+                            accentColor = XiaomiFocusParser.defaultBusinessAccent(biz),
+                            business = biz,
+                            postTimeMillis = System.currentTimeMillis() - idx * 1000L,
+                            isPlayingMedia = isMedia,
+                        )
+                    }
+                    DebugIslandBus.emit(DebugIslandBus.DebugIslandPayload(items, expandImmediately = expand))
+                }
             }
         }
 

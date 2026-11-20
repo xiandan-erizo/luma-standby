@@ -441,6 +441,14 @@ private fun StandbyAlertsCard(
                 onAction = onOpenDndAccess,
             )
         }
+        AlertToggleRow(
+            title = stringResource(R.string.alerts_live_island),
+            subtitle = stringResource(R.string.alerts_live_island_sub),
+            checked = settings.liveActivities,
+            onChecked = { v -> onChange { it.copy(liveActivities = v) } },
+            actionLabel = if (!notificationAccess) stringResource(R.string.widget_permission_open) else null,
+            onAction = onOpenNotifAccess,
+        )
     }
 }
 

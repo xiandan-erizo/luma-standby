@@ -45,6 +45,8 @@ import app.luma.standby.domain.model.LumaTheme
 import app.luma.standby.domain.model.ResolvedColors
 import app.luma.standby.domain.model.resolveColors
 import app.luma.standby.domain.theme.ThemePresets
+import app.luma.standby.domain.widget.LiveActivityInfo
+import app.luma.standby.domain.widget.LiveActivitySource
 import app.luma.standby.domain.widget.WidgetGlyph
 import app.luma.standby.domain.widget.WidgetKind
 import app.luma.standby.domain.widget.WidgetSlot
@@ -154,6 +156,27 @@ class ClockView @JvmOverloads constructor(
     private val unreadPillBounds = RectF()
     private val alertClearBounds = RectF()
     private val alertClearAllBounds = RectF()
+
+    // Dynamic Island / Xiaomi Super Island / Live Activities state (process-memory-only)
+    private var liveActivities: List<LiveActivityInfo> = emptyList()
+    private var renderedLiveActivity: LiveActivityInfo? = null
+    private var liveActivityIndex: Int = 0
+    private var expandedLiveActivity: LiveActivityInfo? = null
+    private var renderedExpandedLive: LiveActivityInfo? = null
+    private var musicAlbumArt: Bitmap? = null
+    private val liveIslandPillBounds = RectF()
+    private val liveCardCollapseBounds = RectF()
+    private val liveCardCycleBounds = RectF()
+    private var livePillProgress: Float = 0f
+    private var livePillAnimator: ValueAnimator? = null
+    private var liveSheenProgress: Float = 0f
+    private var liveSheenAnimator: ValueAnimator? = null
+    private var liveExpandTimeline: Float = 0f
+    private var liveExpandExiting: Boolean = false
+    private var liveExpandStartDragX: Float = 0f
+    private var liveExpandStartDragY: Float = 0f
+    private var liveExpandAnimator: ValueAnimator? = null
+
     private val appIconCache = LinkedHashMap<String, Drawable?>(8, 0.75f, true)
     private val nightRedIconFilter = ColorMatrixColorFilter(
         ColorMatrix(
@@ -287,6 +310,16 @@ class ClockView @JvmOverloads constructor(
             } else {
                 // Vertical drag previews tucking back up into the top unread pill
                 dragOffsetX = rubberBand(rawDx * 0.25f, w * 0.08f)
+                dragOffsetY = rubberBand(rawDy, h * 0.28f)
+            }
+        } else if (expandedLiveActivity != null) {
+            val absX = kotlin.math.abs(rawDx)
+            val absY = kotlin.math.abs(rawDy)
+            if (absX > absY * 1.15f && liveActivities.size > 1) {
+                dragOffsetX = rubberBand(rawDx, w * 0.26f)
+                dragOffsetY = rubberBand(rawDy * 0.18f, h * 0.05f)
+            } else {
+                dragOffsetX = rubberBand(rawDx * 0.20f, w * 0.07f)
                 dragOffsetY = rubberBand(rawDy, h * 0.28f)
             }
         } else {
@@ -488,12 +521,13 @@ class ClockView @JvmOverloads constructor(
 
     /** Returns true if a tap lands on the top unread notification pill (with generous touch pad). */
     fun hitTestUnreadPill(x: Float, y: Float): Boolean {
-        if (activeAlert != null || unreadSummary == null || unreadPillBounds.isEmpty) return false
-        val pad = 28f
-        return x >= unreadPillBounds.left - pad &&
-            x <= unreadPillBounds.right + pad &&
-            y >= unreadPillBounds.top - pad &&
-            y <= unreadPillBounds.bottom + pad
+        if (activeAlert != null || expandedLiveActivity != null || unreadSummary == null || unreadPillBounds.isEmpty) return false
+        val padY = 28f
+        val padLeft = if (liveActivities.isNotEmpty() && !liveIslandPillBounds.isEmpty) 6f else 28f
+        return x >= unreadPillBounds.left - padLeft &&
+            x <= unreadPillBounds.right + 28f &&
+            y >= unreadPillBounds.top - padY &&
+            y <= unreadPillBounds.bottom + padY
     }
 
     /** Returns true if a tap lands on the active alert card's "Clear" action pill. */
@@ -517,23 +551,156 @@ class ClockView @JvmOverloads constructor(
             y <= alertClearAllBounds.bottom + padY
     }
 
-    /** Drops all in-memory notification content, transition snapshots & cached app icons. */
+    /**
+     * Updates active Xiaomi Super Islands, Android 16 Live Updates, and live Music playback.
+     * Triggers a finite spring bloom on arrival and a single Liquid Glass shimmer on updates.
+     */
+    fun setLiveActivities(activities: List<LiveActivityInfo>, albumArt: Bitmap? = null, selectedIndex: Int = 0) {
+        val prevTop = renderedLiveActivity
+        val prevCount = liveActivities.size
+        liveActivities = activities
+        musicAlbumArt = albumArt
+        liveActivityIndex = if (activities.isEmpty()) 0 else selectedIndex.coerceIn(0, activities.lastIndex)
+
+        val currentTop = activities.getOrNull(liveActivityIndex)
+        if (currentTop != null) {
+            renderedLiveActivity = currentTop
+            if (expandedLiveActivity != null) {
+                val updatedExpanded = activities.firstOrNull { it.key == expandedLiveActivity?.key } ?: currentTop
+                expandedLiveActivity = updatedExpanded
+                renderedExpandedLive = updatedExpanded
+            }
+            if (prevCount == 0 || livePillProgress < 0.05f) {
+                animateLivePillTo(1f)
+            } else if (prevTop != null &&
+                (prevTop.key != currentTop.key || prevTop.compactText != currentTop.compactText ||
+                    prevTop.highlightMetric != currentTop.highlightMetric || prevTop.progress != currentTop.progress)
+            ) {
+                triggerLivePillSheen()
+                invalidate()
+            } else {
+                invalidate()
+            }
+        } else {
+            liveIslandPillBounds.setEmpty()
+            if (expandedLiveActivity != null) {
+                setExpandedLiveActivity(null)
+            }
+            animateLivePillTo(0f)
+        }
+    }
+
+    /** Expand a Live Activity from the top Dynamic Island pill into a full-screen Liquid Glass card, or collapse back. */
+    fun setExpandedLiveActivity(activity: LiveActivityInfo?) {
+        if (activity == expandedLiveActivity) return
+        val previous = expandedLiveActivity
+        expandedLiveActivity = activity
+        dragReturnAnimator?.cancel()
+
+        if (activity != null) {
+            val isSwitch = previous != null && previous.key != activity.key
+            renderedExpandedLive = activity
+            renderedLiveActivity = activity
+            dragOffsetX = 0f
+            dragOffsetY = 0f
+            if (!shouldAnimate()) {
+                liveExpandAnimator?.cancel()
+                liveExpandExiting = false
+                liveExpandTimeline = 1f
+                invalidate()
+                return
+            }
+            if (isSwitch) {
+                triggerLivePillSheen()
+                liveExpandExiting = false
+                liveExpandTimeline = 1f
+                invalidate()
+            } else {
+                animateLiveExpandTransition(entering = true)
+            }
+        } else {
+            liveCardCollapseBounds.setEmpty()
+            liveCardCycleBounds.setEmpty()
+            liveExpandStartDragX = dragOffsetX
+            liveExpandStartDragY = dragOffsetY
+            dragOffsetX = 0f
+            dragOffsetY = 0f
+            if (!shouldAnimate() || renderedExpandedLive == null) {
+                liveExpandAnimator?.cancel()
+                renderedExpandedLive = null
+                liveExpandExiting = false
+                liveExpandTimeline = 0f
+                invalidate()
+                return
+            }
+            animateLiveExpandTransition(entering = false)
+        }
+    }
+
+    /** Returns true if a tap lands on the top Dynamic Island pill (with generous touch pad). */
+    fun hitTestLiveIslandPill(x: Float, y: Float): Boolean {
+        if (activeAlert != null || expandedLiveActivity != null || liveActivities.isEmpty() || liveIslandPillBounds.isEmpty) {
+            return false
+        }
+        val padY = 28f
+        val padRight = if (unreadSummary != null && !unreadPillBounds.isEmpty) 6f else 28f
+        return x >= liveIslandPillBounds.left - 28f &&
+            x <= liveIslandPillBounds.right + padRight &&
+            y >= liveIslandPillBounds.top - padY &&
+            y <= liveIslandPillBounds.bottom + padY
+    }
+
+    /** Returns true if a tap lands on the expanded Live Activity card's "Collapse" pill. */
+    fun hitTestLiveCardCollapse(x: Float, y: Float): Boolean {
+        if (expandedLiveActivity == null || liveCardCollapseBounds.isEmpty) return false
+        val padY = 24f
+        val padLeft = if (liveCardCycleBounds.isEmpty) 24f else 6f
+        return x >= liveCardCollapseBounds.left - padLeft &&
+            x <= liveCardCollapseBounds.right + 28f &&
+            y >= liveCardCollapseBounds.top - padY &&
+            y <= liveCardCollapseBounds.bottom + padY
+    }
+
+    /** Returns true if a tap lands on the expanded Live Activity card's "1/N" switcher pill. */
+    fun hitTestLiveCardCycle(x: Float, y: Float): Boolean {
+        if (expandedLiveActivity == null || liveCardCycleBounds.isEmpty) return false
+        val padY = 24f
+        return x >= liveCardCycleBounds.left - 24f &&
+            x <= liveCardCycleBounds.right + 6f &&
+            y >= liveCardCycleBounds.top - padY &&
+            y <= liveCardCycleBounds.bottom + padY
+    }
+
+    /** Drops all in-memory notification content, live activities, transition snapshots & cached icons. */
     fun clearSensitiveMemory() {
         cancelAllAnimations()
         activeAlert = null
         renderedAlert = null
         unreadSummary = null
         renderedUnread = null
+        liveActivities = emptyList()
+        renderedLiveActivity = null
+        liveActivityIndex = 0
+        expandedLiveActivity = null
+        renderedExpandedLive = null
+        musicAlbumArt = null
         alertExiting = false
         alertExitMode = AlertExitMode.TUCK_TO_PILL
         alertTimeline = 0f
         alertRevealProgress = 1f
         unreadPillProgress = 0f
+        livePillProgress = 0f
+        liveSheenProgress = 0f
+        liveExpandTimeline = 0f
+        liveExpandExiting = false
         dragOffsetX = 0f
         dragOffsetY = 0f
         unreadPillBounds.setEmpty()
         alertClearBounds.setEmpty()
         alertClearAllBounds.setEmpty()
+        liveIslandPillBounds.setEmpty()
+        liveCardCollapseBounds.setEmpty()
+        liveCardCycleBounds.setEmpty()
         appIconCache.clear()
         invalidate()
     }
@@ -572,6 +739,9 @@ class ClockView @JvmOverloads constructor(
         alertAnimator?.cancel()
         alertRevealAnimator?.cancel()
         unreadPillAnimator?.cancel()
+        livePillAnimator?.cancel()
+        liveSheenAnimator?.cancel()
+        liveExpandAnimator?.cancel()
         hintAnimator?.cancel()
         dragReturnAnimator?.cancel()
         transitionAnimator?.cancel()
@@ -679,6 +849,90 @@ class ClockView @JvmOverloads constructor(
         }
     }
 
+    private fun animateLivePillTo(target: Float) {
+        livePillAnimator?.cancel()
+        if (!shouldAnimate()) {
+            livePillProgress = target
+            if (target <= 0f) renderedLiveActivity = null
+            invalidate()
+            return
+        }
+        livePillAnimator = ValueAnimator.ofFloat(livePillProgress, target).apply {
+            duration = if (target > 0f) 480L else 280L
+            interpolator = if (target > 0f) linearInterpolator else iosEaseOut
+            addUpdateListener {
+                val raw = it.animatedValue as Float
+                livePillProgress = if (target > 0f) {
+                    springCurve(raw, damping = 0.78f, frequency = 1.52f).coerceIn(0f, 1.06f)
+                } else raw
+                invalidate()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    if (target <= 0f && liveActivities.isEmpty()) {
+                        renderedLiveActivity = null
+                        livePillProgress = 0f
+                    } else if (target > 0f) {
+                        livePillProgress = 1f
+                    }
+                    invalidate()
+                }
+            })
+            start()
+        }
+    }
+
+    private fun triggerLivePillSheen() {
+        if (!shouldAnimate()) {
+            liveSheenProgress = 0f
+            return
+        }
+        liveSheenAnimator?.cancel()
+        liveSheenProgress = 0f
+        liveSheenAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 520L
+            interpolator = linearInterpolator
+            addUpdateListener {
+                liveSheenProgress = it.animatedValue as Float
+                invalidate()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    liveSheenProgress = 0f
+                    invalidate()
+                }
+            })
+            start()
+        }
+    }
+
+    private fun animateLiveExpandTransition(entering: Boolean) {
+        liveExpandAnimator?.cancel()
+        liveExpandExiting = !entering
+        liveExpandTimeline = 0f
+        liveExpandAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = if (entering) 720L else 440L
+            interpolator = linearInterpolator
+            addUpdateListener {
+                liveExpandTimeline = it.animatedValue as Float
+                invalidate()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    if (!entering && expandedLiveActivity == null) {
+                        renderedExpandedLive = null
+                        liveExpandExiting = false
+                        liveExpandTimeline = 0f
+                        liveExpandStartDragX = 0f
+                        liveExpandStartDragY = 0f
+                        invalidate()
+                    }
+                }
+            })
+            start()
+        }
+    }
+
     private fun animateHintTo(target: Float, clearBannerOnEnd: Boolean) {
         hintAnimator?.cancel()
         if (!shouldAnimate()) {
@@ -731,11 +985,31 @@ class ClockView @JvmOverloads constructor(
             else -> (easeOutCubic(subTimeline(tAlert, 0.0f, 0.62f)) * (1f - alertDragFrac * 0.45f)).coerceIn(0f, 1f)
         }
 
-        // Underlying clock pulls back smoothly into spatial depth (1.0 -> 0.90) as notification blooms
-        val depthScale = 1f - 0.095f * alertScrimP
+        val liveExpandedVisible = renderedExpandedLive != null && !alertVisible
+        val tLive = liveExpandTimeline.coerceIn(0f, 1f)
+        val liveDragFrac = if (expandedLiveActivity != null && !alertVisible) {
+            (kotlin.math.hypot(dragOffsetX.toDouble(), dragOffsetY.toDouble()).toFloat() / (h * 0.35f)).coerceIn(0f, 0.55f)
+        } else 0f
+        val liveScrimP = when {
+            !liveExpandedVisible -> 0f
+            liveExpandExiting -> (1f - easeOutCubic(tLive)).coerceIn(0f, 1f)
+            else -> (easeOutCubic(subTimeline(tLive, 0.0f, 0.62f)) * (1f - liveDragFrac * 0.45f)).coerceIn(0f, 1f)
+        }
+
+        val combinedScrimP = max(alertScrimP, liveScrimP)
+
+        // Underlying clock pulls back smoothly into spatial depth (1.0 -> 0.90) as notification or island blooms
+        val depthScale = 1f - 0.095f * combinedScrimP
+
+        if (combinedScrimP > 0.001f) {
+            // Paint solid full-bleed backdrop behind the scaled-down clock so no edge seam ever appears
+            backgroundPaint.shader = null
+            backgroundPaint.color = if (darkSurface) Color.BLACK else colors.background
+            canvas.drawRect(0f, 0f, w, h, backgroundPaint)
+        }
 
         canvas.save()
-        if (alertScrimP > 0.001f) {
+        if (combinedScrimP > 0.001f) {
             canvas.scale(depthScale, depthScale, w * 0.5f, h * 0.5f)
         }
 
@@ -781,8 +1055,8 @@ class ClockView @JvmOverloads constructor(
             }
         } else {
             // Apply live finger-following rubber-band drag on the clock face
-            val clockDragX = if (activeAlert == null) dragOffsetX else 0f
-            val clockDragY = if (activeAlert == null) dragOffsetY else 0f
+            val clockDragX = if (activeAlert == null && expandedLiveActivity == null) dragOffsetX else 0f
+            val clockDragY = if (activeAlert == null && expandedLiveActivity == null) dragOffsetY else 0f
             if (kotlin.math.abs(clockDragX) > 0.5f || kotlin.math.abs(clockDragY) > 0.5f) {
                 val dragMag = (kotlin.math.hypot(clockDragX.toDouble(), clockDragY.toDouble()).toFloat() / (min(w, h) * 0.45f)).coerceIn(0f, 1f)
                 val dragScale = 1f - 0.032f * dragMag
@@ -797,26 +1071,33 @@ class ClockView @JvmOverloads constructor(
         canvas.save()
         canvas.translate(drift.first, drift.second)
 
-        // Top-center Liquid Glass unread pill: hides smoothly when card morphs open,
-        // and blooms back right as the shrinking card docks into the top pill!
-        val pillMask = when {
+        // Top-center Dynamic Island & Unread Pill dock: hides smoothly as either card morphs open,
+        // and blooms back right as the shrinking card docks cleanly into the top capsule!
+        val alertDockMask = when {
             !alertVisible -> 1f
             alertExiting -> easeOutCubic(subTimeline(tAlert, 0.58f, 1.0f))
             else -> (1f - easeOutCubic(subTimeline(tAlert, 0.0f, 0.28f)))
         }
-        val pillVis = (unreadPillProgress * pillMask).coerceIn(0f, 1f)
-        if (pillVis > 0.01f && renderedUnread != null) {
-            drawUnreadNotificationPill(canvas, w, h, nightRed, darkSurface, pillVis)
-        } else if (activeAlert != null || renderedUnread == null) {
-            unreadPillBounds.setEmpty()
+        val liveDockMask = when {
+            !liveExpandedVisible -> 1f
+            liveExpandExiting -> easeOutCubic(subTimeline(tLive, 0.58f, 1.0f))
+            else -> (1f - easeOutCubic(subTimeline(tLive, 0.0f, 0.28f)))
         }
+        val dockMask = min(alertDockMask, liveDockMask)
+        val liveVis = (livePillProgress * dockMask).coerceIn(0f, 1.06f)
+        val unreadVis = (unreadPillProgress * dockMask).coerceIn(0f, 1f)
 
-        // Full-screen iOS StandBy Notification Card (multi-stage pill-to-card spring morph)
+        drawTopDynamicIslandDock(canvas, w, h, nightRed, darkSurface, liveVis, unreadVis)
+
+        // Full-screen overlays: incoming chat alert takes precedence over expanded Live Activity.
         val alert = renderedAlert
+        val expandedLive = renderedExpandedLive
         if (alert != null && (alertExiting || tAlert > 0.001f)) {
             drawNotificationOverlay(canvas, w, h, alert, nightRed, darkSurface, tAlert, alertExiting, alertScrimP)
+        } else if (expandedLive != null && (liveExpandExiting || tLive > 0.001f)) {
+            drawLiveActivityOverlay(canvas, w, h, expandedLive, nightRed, darkSurface, tLive, liveExpandExiting, liveScrimP)
         }
-        if (activeAlert == null) {
+        if (activeAlert == null && expandedLiveActivity == null) {
             drawTransientIndicator(canvas, w, h, nightRed, darkSurface)
         }
         canvas.restore()
@@ -2602,6 +2883,903 @@ class ClockView @JvmOverloads constructor(
     }
 
     // -------------------------------------------------------------------------
+    // iOS 26/27 StandBy Dynamic Island × Xiaomi Super Island (Live Activities)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Unified top-center dock:
+     * - Live Activity only -> Centered Obsidian Liquid Glass Dynamic Island Pill.
+     * - Unread alerts only -> Centered Liquid Glass Unread Notification Pill.
+     * - Both active        -> True iOS Dual-Island Split: main Dynamic Island Pill +
+     *                         detached Liquid Glass unread bubble docked right beside it.
+     */
+    private fun drawTopDynamicIslandDock(
+        canvas: Canvas,
+        w: Float,
+        h: Float,
+        nightRed: Boolean,
+        darkSurface: Boolean,
+        liveVis: Float,
+        unreadVis: Float,
+    ) {
+        val live = renderedLiveActivity?.takeIf { liveVis > 0.01f }
+        val unread = renderedUnread?.takeIf { unreadVis > 0.01f && it.count > 0 }
+
+        if (live == null && unread == null) {
+            liveIslandPillBounds.setEmpty()
+            unreadPillBounds.setEmpty()
+            return
+        }
+        if (live == null) {
+            liveIslandPillBounds.setEmpty()
+            drawUnreadNotificationPill(canvas, w, h, nightRed, darkSurface, unreadVis)
+            return
+        }
+        if (unread == null) {
+            unreadPillBounds.setEmpty()
+            drawDynamicIslandPill(
+                canvas = canvas,
+                w = w,
+                h = h,
+                activity = live,
+                nightRed = nightRed,
+                darkSurface = darkSurface,
+                visibility = liveVis,
+                centerXOverride = w * 0.5f,
+            )
+            return
+        }
+
+        // Dual-Island Split layout: measure both pills so the pair sits perfectly centered!
+        val pillH = (h * 0.056f).coerceIn(30f, 70f)
+        val islandW = measureDynamicIslandWidth(w, pillH, live)
+        val bubbleW = if (unread.count > 1) pillH * 1.48f else pillH
+        val splitGap = pillH * 0.24f
+        val totalW = islandW + splitGap + bubbleW
+        val groupLeft = w * 0.5f - totalW * 0.5f
+
+        drawDynamicIslandPill(
+            canvas = canvas,
+            w = w,
+            h = h,
+            activity = live,
+            nightRed = nightRed,
+            darkSurface = darkSurface,
+            visibility = liveVis,
+            centerXOverride = groupLeft + islandW * 0.5f,
+        )
+        drawDetachedUnreadBubble(
+            canvas = canvas,
+            h = h,
+            pillH = pillH,
+            bubbleLeft = groupLeft + islandW + splitGap,
+            bubbleW = bubbleW,
+            summary = unread,
+            nightRed = nightRed,
+            darkSurface = darkSurface,
+            visibility = unreadVis,
+        )
+    }
+
+    private fun measureDynamicIslandWidth(w: Float, pillH: Float, activity: LiveActivityInfo): Float {
+        val padX = pillH * 0.36f
+        val iconSize = pillH * 0.66f
+        val gap = pillH * 0.24f
+        widgetSecondaryPaint.typeface = roundedBold
+        widgetSecondaryPaint.textSize = pillH * 0.42f
+        val maxTextW = (w * 0.34f).coerceAtLeast(pillH * 2.2f)
+        val clipped = TextUtils.ellipsize(activity.compactText, widgetSecondaryPaint, maxTextW, TextUtils.TruncateAt.END).toString()
+        val textW = widgetSecondaryPaint.measureText(clipped)
+
+        val metric = activity.highlightMetric
+        val rightExtra = when {
+            !metric.isNullOrBlank() -> {
+                dateHeaderPaint.typeface = roundedExtraBold
+                dateHeaderPaint.textSize = pillH * 0.38f
+                gap + dateHeaderPaint.measureText(metric) + pillH * 0.38f
+            }
+            activity.isPlayingMedia -> gap + pillH * 0.56f
+            liveActivities.size > 1 -> gap + pillH * 0.52f
+            else -> 0f
+        }
+        return (padX * 2f + iconSize + gap + textW + rightExtra).coerceIn(pillH * 2.8f, w * 0.68f)
+    }
+
+    private fun drawDynamicIslandPill(
+        canvas: Canvas,
+        w: Float,
+        h: Float,
+        activity: LiveActivityInfo,
+        nightRed: Boolean,
+        darkSurface: Boolean,
+        visibility: Float,
+        centerXOverride: Float,
+    ) {
+        val pillH = (h * 0.056f).coerceIn(30f, 70f)
+        val pillW = measureDynamicIslandWidth(w, pillH, activity)
+        val clampedVis = visibility.coerceIn(0f, 1f)
+        val slideOffset = -pillH * 0.48f * (1f - clampedVis)
+        val pillTop = (h * 0.022f).coerceAtLeast(8f) + slideOffset
+        val pillLeft = centerXOverride - pillW * 0.5f
+        val pillBox = FaceBox(pillLeft, pillTop, pillLeft + pillW, pillTop + pillH)
+        val drift = driftFor()
+
+        if (liveActivities.isNotEmpty() && activeAlert == null && expandedLiveActivity == null) {
+            liveIslandPillBounds.set(
+                pillBox.left + drift.first,
+                pillBox.top + drift.second,
+                pillBox.right + drift.first,
+                pillBox.bottom + drift.second,
+            )
+        } else {
+            liveIslandPillBounds.setEmpty()
+        }
+
+        val accent = if (nightRed) Color.parseColor("#FF453A") else (activity.accentColor ?: vibrantGlowAccent())
+        val layerAlpha = (clampedVis * 255f).toInt().coerceIn(0, 255)
+        if (layerAlpha <= 2) return
+
+        layerBounds.set(pillBox.left - 16f, pillBox.top - 16f, pillBox.right + 16f, pillBox.bottom + 16f)
+        val pillLayer = canvas.saveLayerAlpha(layerBounds, layerAlpha)
+
+        // Subtle spring horizontal bloom when Dynamic Island arrives
+        val sx = 0.62f + 0.38f * visibility
+        val sy = 0.80f + 0.20f * visibility.coerceAtMost(1.03f)
+        canvas.scale(sx, sy, pillBox.centerX, pillBox.centerY)
+
+        // Deep Obsidian Liquid Glass shell with luminous accent aura tint
+        val fillTop = when {
+            nightRed -> Color.argb(215, 36, 5, 5)
+            darkSurface -> Color.argb(218, 22, 24, 32)
+            else -> Color.argb(226, 246, 248, 252)
+        }
+        val fillBot = when {
+            nightRed -> Color.argb(232, 16, 2, 2)
+            darkSurface -> Color.argb(235, 11, 13, 19)
+            else -> Color.argb(238, 232, 236, 242)
+        }
+        drawGlassCard(canvas, pillBox, pillH * 0.5f, fillTop, fillBot, nightRed, darkSurface)
+
+        // Subtle colored specular Liquid Glass rim kiss infused with activity accent color
+        if (!nightRed && darkSurface) {
+            val rimStroke = (pillH * 0.030f).coerceIn(1.2f, 2.6f)
+            cardRimPaint.strokeWidth = rimStroke
+            cardRimPaint.shader = LinearGradient(
+                pillBox.left, pillBox.top, pillBox.right, pillBox.bottom,
+                intArrayOf(withAlpha(accent, 0.44f), withAlpha(Color.WHITE, 0.14f), withAlpha(accent, 0.24f)),
+                floatArrayOf(0f, 0.5f, 1f),
+                Shader.TileMode.CLAMP,
+            )
+            innerScratch.set(
+                pillBox.left + rimStroke * 0.5f,
+                pillBox.top + rimStroke * 0.5f,
+                pillBox.right - rimStroke * 0.5f,
+                pillBox.bottom - rimStroke * 0.5f,
+            )
+            canvas.drawRoundRect(innerScratch, pillH * 0.5f, pillH * 0.5f, cardRimPaint)
+            cardRimPaint.shader = null
+        }
+
+        // Clip interior contents + bottom progress rail + diagonal sheen to stadium pill
+        canvas.save()
+        clipPath.reset()
+        rectScratch.set(pillBox.left, pillBox.top, pillBox.right, pillBox.bottom)
+        clipPath.addRoundRect(rectScratch, pillH * 0.5f, pillH * 0.5f, Path.Direction.CW)
+        canvas.clipPath(clipPath)
+
+        val padX = pillH * 0.36f
+        val iconSize = pillH * 0.66f
+        val gap = pillH * 0.24f
+        val iconLeft = pillBox.left + padX
+        val iconTop = pillBox.centerY - iconSize * 0.5f
+        drawLiveActivityIcon(canvas, activity, iconLeft, iconTop, iconSize, accent, nightRed, darkSurface)
+
+        var rightLimit = pillBox.right - padX
+        val metric = activity.highlightMetric
+        if (!metric.isNullOrBlank()) {
+            dateHeaderPaint.typeface = roundedExtraBold
+            dateHeaderPaint.textSize = pillH * 0.38f
+            val mW = dateHeaderPaint.measureText(metric)
+            val mPad = pillH * 0.18f
+            val badgeW = mW + mPad * 2f
+            val badgeH = pillH * 0.60f
+            val badgeBox = FaceBox(rightLimit - badgeW, pillBox.centerY - badgeH * 0.5f, rightLimit, pillBox.centerY + badgeH * 0.5f)
+            cardFillPaint.shader = null
+            cardFillPaint.color = withAlpha(accent, if (darkSurface) 0.22f else 0.16f)
+            rectScratch.set(badgeBox.left, badgeBox.top, badgeBox.right, badgeBox.bottom)
+            canvas.drawRoundRect(rectScratch, badgeH * 0.5f, badgeH * 0.5f, cardFillPaint)
+
+            dateHeaderPaint.textAlign = Paint.Align.CENTER
+            dateHeaderPaint.color = if (darkSurface) shiftLuminance(accent, 0.20f) else accent
+            val my = badgeBox.centerY - (dateHeaderPaint.ascent() + dateHeaderPaint.descent()) * 0.5f
+            canvas.drawText(metric, badgeBox.centerX, my, dateHeaderPaint)
+            dateHeaderPaint.textAlign = Paint.Align.LEFT
+            rightLimit = badgeBox.left - gap
+        } else if (activity.isPlayingMedia) {
+            val eqW = pillH * 0.48f
+            val eqH = pillH * 0.42f
+            drawAudioSpectrum(
+                canvas = canvas,
+                left = rightLimit - eqW,
+                centerY = pillBox.centerY,
+                width = eqW,
+                height = eqH,
+                color = if (darkSurface) shiftLuminance(accent, 0.18f) else accent,
+                bars = 4,
+            )
+            rightLimit -= eqW + gap
+        } else if (liveActivities.size > 1) {
+            val idxLabel = context.getString(R.string.island_switch, liveActivityIndex + 1, liveActivities.size)
+            dateHeaderPaint.typeface = roundedBold
+            dateHeaderPaint.textSize = pillH * 0.34f
+            dateHeaderPaint.color = if (nightRed) Color.argb(180, 255, 69, 58) else if (darkSurface) Color.argb(160, 255, 255, 255) else Color.argb(150, 0, 0, 0)
+            val iw = dateHeaderPaint.measureText(idxLabel)
+            val iy = pillBox.centerY - (dateHeaderPaint.ascent() + dateHeaderPaint.descent()) * 0.5f
+            canvas.drawText(idxLabel, rightLimit - iw, iy, dateHeaderPaint)
+            rightLimit -= iw + gap
+        }
+
+        val textLeft = iconLeft + iconSize + gap
+        val availTextW = (rightLimit - textLeft).coerceAtLeast(1f)
+        widgetSecondaryPaint.typeface = roundedBold
+        widgetSecondaryPaint.textSize = pillH * 0.42f
+        widgetSecondaryPaint.color = when {
+            nightRed -> Color.parseColor("#FF453A")
+            darkSurface -> Color.argb(245, 255, 255, 255)
+            else -> colors.primary
+        }
+        val clipped = TextUtils.ellipsize(activity.compactText, widgetSecondaryPaint, availTextW, TextUtils.TruncateAt.END).toString()
+        val textY = pillBox.centerY - (widgetSecondaryPaint.ascent() + widgetSecondaryPaint.descent()) * 0.5f
+        canvas.drawText(clipped, textLeft, textY, widgetSecondaryPaint)
+
+        // Razor-thin luminous micro progress rail along the inner bottom arc
+        val prog = activity.progress?.coerceIn(0f, 1f)
+        if (prog != null) {
+            val railInset = pillH * 0.48f
+            val railW = (pillBox.width - railInset * 2f).coerceAtLeast(16f)
+            val railH = (pillH * 0.062f).coerceIn(2.2f, 4.2f)
+            val railY = pillBox.bottom - railH - 1.5f
+            cardFillPaint.shader = null
+            cardFillPaint.color = if (darkSurface) Color.argb(46, 255, 255, 255) else Color.argb(28, 0, 0, 0)
+            rectScratch.set(pillBox.left + railInset, railY, pillBox.left + railInset + railW, railY + railH)
+            canvas.drawRoundRect(rectScratch, railH * 0.5f, railH * 0.5f, cardFillPaint)
+
+            val fillW = (railW * prog).coerceAtLeast(railH)
+            cardFillPaint.color = Color.WHITE
+            cardFillPaint.alpha = 255
+            cardFillPaint.shader = LinearGradient(
+                pillBox.left + railInset, railY,
+                pillBox.left + railInset + fillW, railY,
+                intArrayOf(accent, shiftLuminance(accent, 0.28f)),
+                null,
+                Shader.TileMode.CLAMP,
+            )
+            rectScratch.set(pillBox.left + railInset, railY, pillBox.left + railInset + fillW, railY + railH)
+            canvas.drawRoundRect(rectScratch, railH * 0.5f, railH * 0.5f, cardFillPaint)
+            cardFillPaint.shader = null
+        }
+
+        // Single gossamer diagonal sheen sweep when live activity telemetry updates
+        if (liveSheenProgress > 0.001f && liveSheenProgress < 0.999f) {
+            val bell = kotlin.math.sin(liveSheenProgress * Math.PI).toFloat()
+            val alpha = (48f * bell).toInt().coerceIn(0, 255)
+            val bandW = pillBox.width * 0.34f
+            val sweepX = lerp(pillBox.left - bandW, pillBox.right + bandW, easeInOutCubic(liveSheenProgress))
+            cardHighlightPaint.shader = LinearGradient(
+                sweepX - bandW * 0.5f, pillBox.top,
+                sweepX + bandW * 0.5f, pillBox.bottom,
+                intArrayOf(Color.TRANSPARENT, Color.argb(alpha, 255, 255, 255), Color.TRANSPARENT),
+                floatArrayOf(0f, 0.5f, 1f),
+                Shader.TileMode.CLAMP,
+            )
+            canvas.drawRect(pillBox.left, pillBox.top, pillBox.right, pillBox.bottom, cardHighlightPaint)
+            cardHighlightPaint.shader = null
+        }
+
+        canvas.restore() // clipPath
+        canvas.restoreToCount(pillLayer)
+    }
+
+    /** Detached circular/compact Liquid Glass unread bubble for iOS Dual-Island Split mode. */
+    private fun drawDetachedUnreadBubble(
+        canvas: Canvas,
+        h: Float,
+        pillH: Float,
+        bubbleLeft: Float,
+        bubbleW: Float,
+        summary: UnreadNotificationSummary,
+        nightRed: Boolean,
+        darkSurface: Boolean,
+        visibility: Float,
+    ) {
+        val slideOffset = -pillH * 0.45f * (1f - visibility)
+        val top = (h * 0.022f).coerceAtLeast(8f) + slideOffset
+        val box = FaceBox(bubbleLeft, top, bubbleLeft + bubbleW, top + pillH)
+        val drift = driftFor()
+        if (unreadSummary != null && activeAlert == null && expandedLiveActivity == null) {
+            unreadPillBounds.set(
+                box.left + drift.first,
+                box.top + drift.second,
+                box.right + drift.first,
+                box.bottom + drift.second,
+            )
+        } else {
+            unreadPillBounds.setEmpty()
+        }
+
+        val alphaInt = (visibility * 255f).toInt().coerceIn(0, 255)
+        if (alphaInt <= 2) return
+        layerBounds.set(box.left - 8f, box.top - 8f, box.right + 8f, box.bottom + 8f)
+        val layer = canvas.saveLayerAlpha(layerBounds, alphaInt)
+
+        val fillTop = when {
+            nightRed -> Color.argb(190, 38, 6, 6)
+            darkSurface -> Color.argb(200, 28, 30, 38)
+            else -> Color.argb(215, 242, 244, 248)
+        }
+        val fillBot = when {
+            nightRed -> Color.argb(210, 20, 2, 2)
+            darkSurface -> Color.argb(220, 14, 16, 22)
+            else -> Color.argb(230, 228, 232, 238)
+        }
+        drawGlassCard(canvas, box, pillH * 0.5f, fillTop, fillBot, nightRed, darkSurface)
+
+        val iconSize = pillH * 0.58f
+        val iconLeft = if (summary.count > 1) box.left + pillH * 0.24f else box.centerX - iconSize * 0.5f
+        val iconTop = box.centerY - iconSize * 0.5f
+        val appDrawable = loadAppIcon(summary.packageName)
+        if (appDrawable != null) {
+            drawSquircleAppIcon(canvas, appDrawable, iconLeft, iconTop, iconSize, nightRed)
+        } else {
+            val dotColor = if (nightRed) Color.parseColor("#FF453A") else vibrantGlowAccent()
+            WidgetIcons.draw(canvas, WidgetGlyph.BELL, iconLeft, iconTop, iconSize, dotColor, nightRed = nightRed)
+        }
+
+        if (summary.count > 1) {
+            dateHeaderPaint.typeface = roundedExtraBold
+            dateHeaderPaint.textSize = pillH * 0.40f
+            dateHeaderPaint.textAlign = Paint.Align.CENTER
+            dateHeaderPaint.color = when {
+                nightRed -> Color.parseColor("#FF453A")
+                darkSurface -> Color.WHITE
+                else -> colors.primary
+            }
+            val countCx = iconLeft + iconSize + (box.right - (iconLeft + iconSize)) * 0.5f - pillH * 0.04f
+            val countY = box.centerY - (dateHeaderPaint.ascent() + dateHeaderPaint.descent()) * 0.5f
+            canvas.drawText(summary.count.toString(), countCx, countY, dateHeaderPaint)
+            dateHeaderPaint.textAlign = Paint.Align.LEFT
+        }
+        canvas.restoreToCount(layer)
+    }
+
+    /**
+     * Expanded Full-Screen Liquid Glass Live Activity Hero Card (Xiaomi Super Island,
+     * Android 16 Live Updates, and Live Music Playback):
+     * Morphs smoothly out of the top Dynamic Island pill using 5-beat Apple damped-spring physics.
+     */
+    private fun drawLiveActivityOverlay(
+        canvas: Canvas,
+        w: Float,
+        h: Float,
+        activity: LiveActivityInfo,
+        nightRed: Boolean,
+        darkSurface: Boolean,
+        timeline: Float,
+        exiting: Boolean,
+        scrimP: Float,
+    ) {
+        val accent = if (nightRed) Color.parseColor("#FF453A") else (activity.accentColor ?: vibrantGlowAccent())
+
+        // 1. Frosted ambient backdrop smoothly dimming the underlying clock
+        cardFillPaint.shader = null
+        cardFillPaint.color = when {
+            nightRed -> Color.argb((236 * scrimP).toInt(), 0, 0, 0)
+            darkSurface -> Color.argb((226 * scrimP).toInt(), 4, 5, 8)
+            else -> Color.argb((205 * scrimP).toInt(), 228, 231, 238)
+        }
+        canvas.drawRect(0f, 0f, w, h, cardFillPaint)
+
+        // 2. Rich ambient backlight halo infused with the Live Activity's signature accent color
+        if (darkSurface && scrimP > 0.01f) {
+            val haloScale = 0.72f + 0.30f * scrimP
+            val haloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                shader = RadialGradient(
+                    w * 0.5f, h * 0.5f, max(w, h) * 0.48f * haloScale,
+                    intArrayOf(withAlpha(accent, (if (nightRed) 0.24f else 0.34f) * scrimP), Color.TRANSPARENT),
+                    floatArrayOf(0f, 1f),
+                    Shader.TileMode.CLAMP,
+                )
+            }
+            canvas.drawRect(0f, 0f, w, h, haloPaint)
+        }
+
+        val landscape = w >= h
+        val heroW = if (landscape) min(w * 0.78f, h * 1.70f) else w * 0.90f
+        val heroH = if (landscape) min(h * 0.60f, heroW * 0.45f) else min(h * 0.36f, w * 0.64f)
+        val heroLeft = w * 0.5f - heroW * 0.5f
+        val heroTop = h * 0.5f - heroH * 0.5f
+        val heroCornerR = min(heroW, heroH) * 0.145f
+
+        val pillH = (h * 0.056f).coerceIn(30f, 70f)
+        val pillW = measureDynamicIslandWidth(w, pillH, activity)
+        val pillTop = (h * 0.022f).coerceAtLeast(8f)
+        val pillLeft = w * 0.5f - pillW * 0.5f
+        val pillCornerR = pillH * 0.5f
+
+        val morphP: Float
+        val shellAlpha: Float
+        val iconScaleP: Float
+        val iconAlpha: Float
+        val metaP: Float
+        val bodyP: Float
+        val shimmerT: Float
+
+        if (!exiting) {
+            morphP = springCurve(subTimeline(timeline, 0.0f, 0.76f), damping = 0.80f, frequency = 1.56f)
+            shellAlpha = easeOutCubic(subTimeline(timeline, 0.0f, 0.22f))
+            iconScaleP = springCurve(subTimeline(timeline, 0.10f, 0.68f), damping = 0.74f, frequency = 1.72f)
+            iconAlpha = easeOutCubic(subTimeline(timeline, 0.10f, 0.34f))
+            metaP = easeOutCubic(subTimeline(timeline, 0.22f, 0.70f))
+            bodyP = easeOutCubic(subTimeline(timeline, 0.30f, 0.84f))
+            shimmerT = subTimeline(timeline, 0.34f, 0.98f)
+        } else {
+            val backP = easeInOutCubic(timeline)
+            morphP = 1f - backP
+            shellAlpha = (1f - easeOutCubic(subTimeline(timeline, 0.64f, 1.0f))).coerceIn(0f, 1f)
+            val contentOut = (1f - easeOutCubic(subTimeline(timeline, 0.0f, 0.38f))).coerceIn(0f, 1f)
+            iconScaleP = 0.84f + 0.16f * contentOut
+            iconAlpha = contentOut
+            metaP = contentOut
+            bodyP = contentOut
+            shimmerT = 0f
+        }
+
+        val shellAlphaInt = (shellAlpha * 255f).toInt().coerceIn(0, 255)
+        if (shellAlphaInt <= 2) return
+
+        val liveDragX = if (!exiting) dragOffsetX else liveExpandStartDragX * morphP
+        val liveDragY = if (!exiting) dragOffsetY else liveExpandStartDragY * morphP
+        val dragShrink = if (!exiting) {
+            1f - 0.055f * (kotlin.math.hypot(liveDragX.toDouble(), liveDragY.toDouble()).toFloat() / (h * 0.40f)).coerceIn(0f, 1f)
+        } else 1f
+
+        val curW = lerp(pillW, heroW, morphP) * dragShrink
+        val curH = lerp(pillH, heroH, morphP) * dragShrink
+        val curCx = lerp(pillLeft + pillW * 0.5f, heroLeft + heroW * 0.5f, morphP) + liveDragX
+        val curCy = lerp(pillTop + pillH * 0.5f, heroTop + heroH * 0.5f, morphP) + liveDragY
+        val cardBox = FaceBox(curCx - curW * 0.5f, curCy - curH * 0.5f, curCx + curW * 0.5f, curCy + curH * 0.5f)
+        val cornerR = lerp(pillCornerR, heroCornerR, morphP.coerceIn(0f, 1f))
+
+        layerBounds.set(0f, 0f, w, h)
+        val shellLayer = canvas.saveLayerAlpha(layerBounds, shellAlphaInt)
+
+        val cardTop = when {
+            nightRed -> Color.argb(244, 20, 4, 4)
+            darkSurface -> Color.argb(236, 26, 28, 37)
+            else -> Color.argb(244, 250, 251, 254)
+        }
+        val cardBot = when {
+            nightRed -> Color.argb(250, 8, 1, 1)
+            darkSurface -> Color.argb(246, 13, 15, 22)
+            else -> Color.argb(248, 236, 240, 246)
+        }
+        drawGlassCard(canvas, cardBox, cornerR, cardTop, cardBot, nightRed, darkSurface)
+
+        // Subtle accent-infused outer bevel rim
+        if (!nightRed && darkSurface) {
+            val rimW = (min(curW, curH) * 0.0055f).coerceIn(1.5f, 3.0f)
+            cardRimPaint.strokeWidth = rimW
+            cardRimPaint.shader = LinearGradient(
+                cardBox.left, cardBox.top, cardBox.right, cardBox.bottom,
+                intArrayOf(withAlpha(accent, 0.42f), withAlpha(Color.WHITE, 0.14f), withAlpha(accent, 0.22f)),
+                floatArrayOf(0f, 0.5f, 1f),
+                Shader.TileMode.CLAMP,
+            )
+            innerScratch.set(cardBox.left + rimW * 0.5f, cardBox.top + rimW * 0.5f, cardBox.right - rimW * 0.5f, cardBox.bottom - rimW * 0.5f)
+            canvas.drawRoundRect(innerScratch, cornerR, cornerR, cardRimPaint)
+            cardRimPaint.shader = null
+        }
+
+        canvas.save()
+        clipPath.reset()
+        rectScratch.set(cardBox.left, cardBox.top, cardBox.right, cardBox.bottom)
+        clipPath.addRoundRect(rectScratch, cornerR, cornerR, Path.Direction.CW)
+        canvas.clipPath(clipPath)
+
+        val contentBox = FaceBox(curCx - heroW * 0.5f, curCy - heroH * 0.5f, curCx + heroW * 0.5f, curCy + heroH * 0.5f)
+        val padX = heroH * 0.135f
+        val iconSize = (heroH * 0.48f).coerceAtMost(heroW * 0.26f)
+        val iconLeft = contentBox.left + padX
+        val iconTop = contentBox.centerY - iconSize * 0.5f
+
+        // Beat 2: Left Hero Icon or Full-Bleed Rounded Album Art
+        val iconAlphaInt = (iconAlpha * 255f).toInt().coerceIn(0, 255)
+        if (iconAlphaInt > 2) {
+            val iconScale = 0.66f + 0.34f * iconScaleP
+            val iconCx = iconLeft + iconSize * 0.5f
+            val iconCy = iconTop + iconSize * 0.5f
+            layerBounds.set(iconLeft - iconSize * 0.3f, iconTop - iconSize * 0.3f, iconLeft + iconSize * 1.3f, iconTop + iconSize * 1.3f)
+            val iconLayer = canvas.saveLayerAlpha(layerBounds, iconAlphaInt)
+            canvas.scale(iconScale, iconScale, iconCx, iconCy)
+            drawLiveActivityIcon(canvas, activity, iconLeft, iconTop, iconSize, accent, nightRed, darkSurface)
+            canvas.restoreToCount(iconLayer)
+        }
+
+        val textLeft = iconLeft + iconSize + padX * 0.85f
+        val textRight = contentBox.right - padX
+        val availW = (textRight - textLeft).coerceAtLeast(1f)
+        val primaryText = when {
+            nightRed -> Color.parseColor("#FF3B30")
+            darkSurface -> Color.WHITE
+            else -> Color.parseColor("#1C1C1E")
+        }
+        val secondaryText = when {
+            nightRed -> Color.argb(185, 255, 69, 58)
+            darkSurface -> Color.argb(182, 235, 240, 250)
+            else -> Color.argb(168, 28, 28, 30)
+        }
+        val brightAccent = if (darkSurface && !nightRed) shiftLuminance(accent, 0.18f) else accent
+        val drift = driftFor()
+
+        // Beat 3: Glowing Live Dot + Source Label + Collapse / Switch pills
+        if (metaP > 0.01f) {
+            val metaDy = if (!exiting) heroH * 0.045f * (1f - metaP) else -heroH * 0.028f * (1f - metaP)
+            val metaY = contentBox.top + heroH * 0.25f + metaDy
+            val liveSuffix = context.getString(
+                if (activity.isPlayingMedia) R.string.island_now_playing else R.string.island_live_badge,
+            )
+            val metaText = "${activity.appLabel}  ·  $liveSuffix"
+
+            val pillTextSize = (heroH * 0.070f).coerceIn(12f, 32f)
+            dateHeaderPaint.typeface = roundedBold
+            dateHeaderPaint.textSize = pillTextSize
+            val pillPadX = pillTextSize * 0.72f
+            val pillBoxH = pillTextSize * 1.80f
+            val pillTopY = metaY - pillBoxH * 0.72f
+            val pillBotY = metaY + pillBoxH * 0.28f
+            val pillGap = pillTextSize * 0.45f
+            val metaAlphaInt = (metaP * 255f).toInt().coerceIn(0, 255)
+
+            // Rightmost pill: Collapse back to Dynamic Island
+            val collapseLabel = context.getString(R.string.island_collapse)
+            val collapseW = dateHeaderPaint.measureText(collapseLabel) + pillPadX * 2f
+            val collapseBox = FaceBox(textRight - collapseW, pillTopY, textRight, pillBotY)
+            layerBounds.set(collapseBox.left - 4f, collapseBox.top - 4f, collapseBox.right + 4f, collapseBox.bottom + 4f)
+            val cLayer = canvas.saveLayerAlpha(layerBounds, metaAlphaInt)
+            drawGlassCard(
+                canvas, collapseBox, pillBoxH * 0.5f,
+                if (nightRed) Color.argb(72, 255, 59, 48) else if (darkSurface) Color.argb(50, 255, 255, 255) else Color.argb(24, 0, 0, 0),
+                if (nightRed) Color.argb(42, 255, 59, 48) else if (darkSurface) Color.argb(26, 255, 255, 255) else Color.argb(14, 0, 0, 0),
+                nightRed, darkSurface,
+            )
+            dateHeaderPaint.textAlign = Paint.Align.CENTER
+            dateHeaderPaint.color = primaryText
+            val cy = collapseBox.centerY - (dateHeaderPaint.ascent() + dateHeaderPaint.descent()) * 0.5f
+            canvas.drawText(collapseLabel, collapseBox.centerX, cy, dateHeaderPaint)
+            dateHeaderPaint.textAlign = Paint.Align.LEFT
+            canvas.restoreToCount(cLayer)
+
+            var rightEdge = collapseBox.left - pillGap
+            if (!exiting && expandedLiveActivity != null) {
+                liveCardCollapseBounds.set(
+                    collapseBox.left + drift.first,
+                    collapseBox.top + drift.second,
+                    collapseBox.right + drift.first,
+                    collapseBox.bottom + drift.second,
+                )
+            } else {
+                liveCardCollapseBounds.setEmpty()
+            }
+
+            if (liveActivities.size > 1) {
+                val switchLabel = context.getString(R.string.island_switch, liveActivityIndex + 1, liveActivities.size)
+                val switchW = dateHeaderPaint.measureText(switchLabel) + pillPadX * 2f
+                val switchBox = FaceBox(rightEdge - switchW, pillTopY, rightEdge, pillBotY)
+                layerBounds.set(switchBox.left - 4f, switchBox.top - 4f, switchBox.right + 4f, switchBox.bottom + 4f)
+                val sLayer = canvas.saveLayerAlpha(layerBounds, metaAlphaInt)
+                drawGlassCard(
+                    canvas, switchBox, pillBoxH * 0.5f,
+                    if (nightRed) Color.argb(52, 255, 59, 48) else if (darkSurface) Color.argb(34, 255, 255, 255) else Color.argb(18, 0, 0, 0),
+                    if (nightRed) Color.argb(28, 255, 59, 48) else if (darkSurface) Color.argb(18, 255, 255, 255) else Color.argb(12, 0, 0, 0),
+                    nightRed, darkSurface,
+                )
+                dateHeaderPaint.textAlign = Paint.Align.CENTER
+                dateHeaderPaint.color = brightAccent
+                val sy = switchBox.centerY - (dateHeaderPaint.ascent() + dateHeaderPaint.descent()) * 0.5f
+                canvas.drawText(switchLabel, switchBox.centerX, sy, dateHeaderPaint)
+                dateHeaderPaint.textAlign = Paint.Align.LEFT
+                canvas.restoreToCount(sLayer)
+                rightEdge = switchBox.left - pillGap
+                if (!exiting && expandedLiveActivity != null) {
+                    liveCardCycleBounds.set(
+                        switchBox.left + drift.first,
+                        switchBox.top + drift.second,
+                        switchBox.right + drift.first,
+                        switchBox.bottom + drift.second,
+                    )
+                } else {
+                    liveCardCycleBounds.setEmpty()
+                }
+            } else {
+                liveCardCycleBounds.setEmpty()
+            }
+
+            // Glowing live indicator dot
+            val dotR = (heroH * 0.017f).coerceIn(4f, 9f)
+            val dotCx = textLeft + dotR
+            val dotCy = metaY - heroH * 0.028f
+            cardFillPaint.shader = null
+            cardFillPaint.color = withAlpha(brightAccent, 0.28f * metaP)
+            canvas.drawCircle(dotCx, dotCy, dotR * 2.0f, cardFillPaint)
+            cardFillPaint.color = withAlpha(brightAccent, metaP)
+            canvas.drawCircle(dotCx, dotCy, dotR, cardFillPaint)
+
+            val metaTextLeft = textLeft + dotR * 3.4f
+            widgetSecondaryPaint.typeface = roundedBold
+            widgetSecondaryPaint.textSize = (heroH * 0.088f).coerceIn(14f, 40f)
+            widgetSecondaryPaint.color = withAlpha(secondaryText, metaP)
+            val metaAvail = (rightEdge - metaTextLeft).coerceAtLeast(1f)
+            val clippedMeta = TextUtils.ellipsize(metaText, widgetSecondaryPaint, metaAvail, TextUtils.TruncateAt.END).toString()
+            canvas.drawText(clippedMeta, metaTextLeft, metaY, widgetSecondaryPaint)
+        } else {
+            liveCardCollapseBounds.setEmpty()
+            liveCardCycleBounds.setEmpty()
+        }
+
+        // Beat 4: Giant Luminous Right Metric / Audio Spectrum + Bold Hero Title + Subtitle + Progress Track
+        if (bodyP > 0.01f) {
+            val bodyDy = if (!exiting) heroH * 0.058f * (1f - bodyP) else -heroH * 0.032f * (1f - bodyP)
+            val hasProgress = activity.progress != null
+            val titleBaseline = contentBox.top + heroH * (if (hasProgress) 0.455f else 0.50f) + bodyDy
+
+            var titleAvailW = availW
+            val metric = activity.highlightMetric
+            if (!metric.isNullOrBlank()) {
+                widgetPrimaryPaint.typeface = roundedExtraBold
+                widgetPrimaryPaint.textSize = (heroH * 0.165f).coerceIn(22f, 74f)
+                val metricW = widgetPrimaryPaint.measureText(metric).coerceAtMost(availW * 0.42f)
+                val clippedMetric = TextUtils.ellipsize(metric, widgetPrimaryPaint, metricW, TextUtils.TruncateAt.END).toString()
+                val actualW = widgetPrimaryPaint.measureText(clippedMetric)
+                widgetPrimaryPaint.color = withAlpha(brightAccent, bodyP)
+                canvas.drawText(clippedMetric, textRight - actualW, titleBaseline, widgetPrimaryPaint)
+                titleAvailW = (availW - actualW - padX * 0.45f).coerceAtLeast(1f)
+            } else if (activity.isPlayingMedia) {
+                val eqW = (heroH * 0.16f).coerceIn(28f, 72f)
+                val eqH = (heroH * 0.12f).coerceIn(20f, 52f)
+                drawAudioSpectrum(
+                    canvas = canvas,
+                    left = textRight - eqW,
+                    centerY = titleBaseline - eqH * 0.36f,
+                    width = eqW,
+                    height = eqH,
+                    color = withAlpha(brightAccent, bodyP),
+                    bars = 5,
+                )
+                titleAvailW = (availW - eqW - padX * 0.45f).coerceAtLeast(1f)
+            }
+
+            widgetPrimaryPaint.typeface = roundedExtraBold
+            widgetPrimaryPaint.textSize = (heroH * 0.150f).coerceIn(20f, 68f)
+            widgetPrimaryPaint.color = withAlpha(primaryText, bodyP)
+            val clippedTitle = TextUtils.ellipsize(activity.title, widgetPrimaryPaint, titleAvailW, TextUtils.TruncateAt.END).toString()
+            canvas.drawText(clippedTitle, textLeft, titleBaseline, widgetPrimaryPaint)
+
+            val sub = activity.subtitle
+            if (!sub.isNullOrBlank()) {
+                widgetSecondaryPaint.typeface = roundedBold
+                widgetSecondaryPaint.textSize = (heroH * 0.105f).coerceIn(15f, 46f)
+                widgetSecondaryPaint.color = withAlpha(secondaryText, bodyP * 0.96f)
+                val subLayout = StaticLayout.Builder
+                    .obtain(sub, 0, sub.length, widgetSecondaryPaint, availW.toInt().coerceAtLeast(1))
+                    .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+                    .setMaxLines(if (hasProgress) 1 else 2)
+                    .setEllipsize(TextUtils.TruncateAt.END)
+                    .setIncludePad(false)
+                    .setLineSpacing(0f, 1.15f)
+                    .build()
+                canvas.save()
+                canvas.translate(textLeft, contentBox.top + heroH * (if (hasProgress) 0.535f else 0.58f) + bodyDy * 1.12f)
+                subLayout.draw(canvas)
+                canvas.restore()
+            }
+
+            // Luminous Liquid Glass Progress Bar
+            val prog = activity.progress?.coerceIn(0f, 1f)
+            if (prog != null) {
+                val barTop = contentBox.top + heroH * 0.745f + bodyDy * 1.18f
+                val barH = (heroH * 0.036f).coerceIn(8f, 16f)
+                drawLiveProgressBar(canvas, textLeft, barTop, availW, barH, prog, accent, nightRed, darkSurface, bodyP)
+            }
+        }
+
+        // Subtle iOS home-grabber collapse bar along card bottom
+        val grabAlpha = bodyP.coerceIn(0f, 1f)
+        if (grabAlpha > 0.05f) {
+            val barW = curW * 0.12f
+            val barH = (heroH * 0.016f).coerceIn(3f, 7f)
+            val barY = cardBox.bottom - heroH * 0.068f
+            cardFillPaint.shader = null
+            val barColor = if (nightRed) Color.argb(82, 255, 69, 58) else if (darkSurface) Color.argb(64, 255, 255, 255) else Color.argb(46, 0, 0, 0)
+            cardFillPaint.color = withAlpha(barColor, grabAlpha)
+            rectScratch.set(cardBox.centerX - barW * 0.5f, barY, cardBox.centerX + barW * 0.5f, barY + barH)
+            canvas.drawRoundRect(rectScratch, barH * 0.5f, barH * 0.5f, cardFillPaint)
+        }
+
+        // Beat 5: Diagonal Liquid Glass Specular Sheen Sweep
+        if (!exiting && darkSurface && shimmerT > 0.001f && shimmerT < 0.999f) {
+            val bell = kotlin.math.sin(shimmerT * Math.PI).toFloat()
+            val gleamAlpha = ((if (nightRed) 26f else 38f) * bell).toInt().coerceIn(0, 255)
+            if (gleamAlpha > 0) {
+                val bandW = cardBox.width * 0.42f
+                val sweepX = lerp(cardBox.left - bandW, cardBox.right + bandW, easeInOutCubic(shimmerT))
+                val gleamColor = if (nightRed) Color.argb(gleamAlpha, 255, 95, 85) else Color.argb(gleamAlpha, 255, 255, 255)
+                cardHighlightPaint.shader = LinearGradient(
+                    sweepX - bandW * 0.5f, cardBox.top,
+                    sweepX + bandW * 0.5f, cardBox.bottom,
+                    intArrayOf(Color.TRANSPARENT, gleamColor, Color.TRANSPARENT),
+                    floatArrayOf(0f, 0.5f, 1f),
+                    Shader.TileMode.CLAMP,
+                )
+                canvas.drawRect(cardBox.left, cardBox.top, cardBox.right, cardBox.bottom, cardHighlightPaint)
+                cardHighlightPaint.shader = null
+            }
+        }
+
+        canvas.restore() // clipPath
+        canvas.restoreToCount(shellLayer)
+    }
+
+    private fun drawLiveActivityIcon(
+        canvas: Canvas,
+        activity: LiveActivityInfo,
+        left: Float,
+        top: Float,
+        size: Float,
+        accent: Int,
+        nightRed: Boolean,
+        darkSurface: Boolean,
+    ) {
+        val art = if (activity.isPlayingMedia) musicAlbumArt?.takeIf { !it.isRecycled } else null
+        if (art != null) {
+            drawRoundedBitmapIcon(canvas, art, left, top, size, nightRed)
+            return
+        }
+        val drawable = LumaNotificationListener.islandIconFor(activity.key, activity.packageName)
+            ?: loadAppIcon(activity.packageName)
+        if (drawable != null) {
+            drawSquircleAppIcon(canvas, drawable, left, top, size, nightRed)
+            return
+        }
+
+        // Tactile Liquid Glass accent badge fallback with domain glyph
+        val iconBox = FaceBox(left, top, left + size, top + size)
+        drawGlassCard(
+            canvas, iconBox, size * 0.24f,
+            shiftLuminance(accent, 0.14f),
+            shiftLuminance(accent, -0.18f),
+            nightRed, darkSurface, skyCard = !nightRed,
+        )
+        val glyph = when {
+            activity.isPlayingMedia || activity.business == "media" -> WidgetGlyph.MUSIC
+            activity.business == "timer" -> WidgetGlyph.ALARM
+            else -> WidgetGlyph.BELL
+        }
+        val glyphSize = size * 0.52f
+        WidgetIcons.draw(
+            canvas, glyph,
+            left + (size - glyphSize) * 0.5f,
+            top + (size - glyphSize) * 0.5f,
+            glyphSize,
+            if (nightRed) Color.BLACK else Color.WHITE,
+            nightRed = nightRed,
+        )
+    }
+
+    private fun drawRoundedBitmapIcon(
+        canvas: Canvas,
+        bitmap: Bitmap,
+        left: Float,
+        top: Float,
+        size: Float,
+        nightRed: Boolean,
+    ) {
+        val cornerR = size * 0.23f
+        canvas.save()
+        clipPath.reset()
+        rectScratch.set(left, top, left + size, top + size)
+        clipPath.addRoundRect(rectScratch, cornerR, cornerR, Path.Direction.CW)
+        canvas.clipPath(clipPath)
+        bitmapPaint.colorFilter = if (nightRed) nightRedIconFilter else null
+        canvas.drawBitmap(bitmap, null, rectScratch, bitmapPaint)
+        bitmapPaint.colorFilter = null
+        canvas.restore()
+
+        val rimW = (size * 0.018f).coerceIn(1f, 2.5f)
+        cardRimPaint.strokeWidth = rimW
+        cardRimPaint.shader = LinearGradient(
+            left, top, left + size, top + size,
+            intArrayOf(
+                if (nightRed) Color.argb(95, 255, 69, 58) else Color.argb(115, 255, 255, 255),
+                Color.argb(20, 255, 255, 255),
+                if (nightRed) Color.argb(48, 255, 69, 58) else Color.argb(60, 255, 255, 255),
+            ),
+            floatArrayOf(0f, 0.5f, 1f),
+            Shader.TileMode.CLAMP,
+        )
+        innerScratch.set(left + rimW * 0.5f, top + rimW * 0.5f, left + size - rimW * 0.5f, top + size - rimW * 0.5f)
+        canvas.drawRoundRect(innerScratch, cornerR, cornerR, cardRimPaint)
+        cardRimPaint.shader = null
+    }
+
+    private fun drawAudioSpectrum(
+        canvas: Canvas,
+        left: Float,
+        centerY: Float,
+        width: Float,
+        height: Float,
+        color: Int,
+        bars: Int,
+    ) {
+        val heights = if (bars >= 5) floatArrayOf(0.46f, 0.94f, 0.64f, 1.0f, 0.52f)
+        else floatArrayOf(0.44f, 0.96f, 0.62f, 0.80f)
+        val count = heights.size
+        val barW = width / (count * 1.75f - 0.75f)
+        val step = barW * 1.75f
+        cardFillPaint.shader = null
+        cardFillPaint.color = color
+        for (i in 0 until count) {
+            val bh = (height * heights[i]).coerceAtLeast(barW)
+            val bx = left + i * step
+            rectScratch.set(bx, centerY - bh * 0.5f, bx + barW, centerY + bh * 0.5f)
+            canvas.drawRoundRect(rectScratch, barW * 0.5f, barW * 0.5f, cardFillPaint)
+        }
+    }
+
+    private fun drawLiveProgressBar(
+        canvas: Canvas,
+        left: Float,
+        top: Float,
+        width: Float,
+        height: Float,
+        progress: Float,
+        accent: Int,
+        nightRed: Boolean,
+        darkSurface: Boolean,
+        alpha: Float,
+    ) {
+        val r = height * 0.5f
+        cardFillPaint.shader = null
+        cardFillPaint.color = withAlpha(
+            when {
+                nightRed -> Color.argb(64, 255, 69, 58)
+                darkSurface -> Color.argb(42, 255, 255, 255)
+                else -> Color.argb(26, 0, 0, 0)
+            },
+            alpha,
+        )
+        rectScratch.set(left, top, left + width, top + height)
+        canvas.drawRoundRect(rectScratch, r, r, cardFillPaint)
+
+        val fillW = (width * progress.coerceIn(0f, 1f)).coerceAtLeast(height)
+        val startC = withAlpha(shiftLuminance(accent, -0.06f), alpha)
+        val endC = withAlpha(shiftLuminance(accent, 0.26f), alpha)
+        cardFillPaint.color = Color.WHITE
+        cardFillPaint.alpha = 255
+        cardFillPaint.shader = LinearGradient(left, top, left + fillW, top, intArrayOf(startC, endC), null, Shader.TileMode.CLAMP)
+        rectScratch.set(left, top, left + fillW, top + height)
+        canvas.drawRoundRect(rectScratch, r, r, cardFillPaint)
+        cardFillPaint.shader = null
+
+        // Luminous glowing progress tip orb
+        val tipCx = (left + fillW - r).coerceIn(left + r, left + width - r)
+        val tipCy = top + r
+        cardFillPaint.color = withAlpha(shiftLuminance(accent, 0.30f), 0.34f * alpha)
+        canvas.drawCircle(tipCx, tipCy, r * 1.85f, cardFillPaint)
+        cardFillPaint.color = withAlpha(if (nightRed) Color.parseColor("#FF6961") else Color.WHITE, 0.92f * alpha)
+        canvas.drawCircle(tipCx, tipCy, r * 0.62f, cardFillPaint)
+    }
+
+    // -------------------------------------------------------------------------
     // iOS 26/27 StandBy Notifications: Full-Screen Ambient Alert + Top Pill
     // -------------------------------------------------------------------------
 
@@ -2645,8 +3823,16 @@ class ClockView @JvmOverloads constructor(
         val pillW = padX * 2f + iconSize + iconGap + textW
         val pillLeft = w * 0.5f - pillW * 0.5f
         val pillBox = FaceBox(pillLeft, pillTop, pillLeft + pillW, pillTop + pillH)
-        if (unreadSummary != null && activeAlert == null) {
-            unreadPillBounds.set(pillBox.left, pillBox.top, pillBox.right, pillBox.bottom)
+        val drift = driftFor()
+        if (unreadSummary != null && activeAlert == null && expandedLiveActivity == null) {
+            unreadPillBounds.set(
+                pillBox.left + drift.first,
+                pillBox.top + drift.second,
+                pillBox.right + drift.first,
+                pillBox.bottom + drift.second,
+            )
+        } else {
+            unreadPillBounds.setEmpty()
         }
 
         val layerAlpha = (visibility * 255f).toInt().coerceIn(0, 255)
