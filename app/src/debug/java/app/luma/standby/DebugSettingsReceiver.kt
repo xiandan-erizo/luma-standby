@@ -8,6 +8,8 @@ import app.luma.standby.domain.model.FaceStyle
 import app.luma.standby.domain.model.StoredPlacement
 import app.luma.standby.domain.theme.ThemeEditing
 import app.luma.standby.domain.theme.ThemeRepository
+import app.luma.standby.ui.clock.DebugAlertBus
+import app.luma.standby.ui.clock.StandbyNotificationAlert
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -91,8 +93,31 @@ class DebugSettingsReceiver : BroadcastReceiver() {
                         }
                         next = next.copy(widgetPlacements = list)
                     }
+                    if (intent.hasExtra("tapToReveal")) {
+                        next = next.copy(notificationTapToReveal = intent.getBooleanExtra("tapToReveal", false))
+                    }
                     next
                 }
+            }
+            // In-memory debug-only notification preview (never persisted).
+            intent.getStringExtra("mockAlert")?.let { raw ->
+                val parts = raw.split("|")
+                val appLabel = parts.getOrNull(0)?.trim().orEmpty().ifEmpty { "Messages" }
+                val title = parts.getOrNull(1)?.trim().orEmpty().ifEmpty { appLabel }
+                val pkg = intent.getStringExtra("mockPkg")
+                val count = intent.getIntExtra("mockCount", 1).coerceAtLeast(1)
+                val tapReveal = intent.getBooleanExtra("mockTapReveal", false)
+                DebugAlertBus.emit(
+                    StandbyNotificationAlert(
+                        appLabel = appLabel,
+                        title = title,
+                        packageName = pkg,
+                        unreadCount = count,
+                        tapToReveal = tapReveal,
+                        revealed = false,
+                        isPrivateRedacted = title.equals(appLabel, ignoreCase = true),
+                    ),
+                )
             }
         }
 

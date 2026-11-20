@@ -36,6 +36,9 @@ internal object NotificationPrivacyPolicy {
     fun info(
         mode: NotificationTitleMode,
         appLabel: String,
+        packageName: String? = null,
+        postTimeMillis: Long = 0L,
+        key: String? = null,
         publicTitle: () -> CharSequence?,
     ): NotificationInfo? {
         if (mode == NotificationTitleMode.OMIT) return null
@@ -43,7 +46,13 @@ internal object NotificationPrivacyPolicy {
         val title = if (mode == NotificationTitleMode.PUBLIC_TITLE) {
             publicTitle()?.toString()?.trim()?.take(MAX_TEXT_LENGTH).orEmpty().ifEmpty { label }
         } else label
-        return NotificationInfo(appLabel = label, title = title)
+        return NotificationInfo(
+            appLabel = label,
+            title = title,
+            packageName = packageName,
+            postTimeMillis = postTimeMillis,
+            key = key,
+        )
     }
 
     private const val MAX_TEXT_LENGTH = 160
@@ -87,8 +96,11 @@ internal class NotificationMemorySnapshot(private val capacity: Int = 64) {
         val entry = entries[key] ?: return
         val visibility = NotificationPrivacyPolicy.visibility(entry.visibility, visibilityOverride)
         val info = NotificationPrivacyPolicy.info(
-            NotificationPrivacyPolicy.titleMode(visibility),
-            entry.info.appLabel,
+            mode = NotificationPrivacyPolicy.titleMode(visibility),
+            appLabel = entry.info.appLabel,
+            packageName = entry.info.packageName,
+            postTimeMillis = entry.info.postTimeMillis,
+            key = entry.info.key,
         ) { entry.info.title }
         posted(key, entry.postTime, info, visibility)
     }

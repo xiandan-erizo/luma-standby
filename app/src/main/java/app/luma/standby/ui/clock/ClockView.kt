@@ -6,6 +6,8 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
@@ -17,14 +19,18 @@ import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.SweepGradient
 import android.graphics.Typeface
+import android.graphics.drawable.Drawable
 import android.os.Handler
 import android.os.Looper
+import android.text.Layout
+import android.text.StaticLayout
 import android.text.TextPaint
 import android.text.TextUtils
 import android.text.format.DateFormat
 import android.util.AttributeSet
 import android.view.View
 import androidx.core.content.ContextCompat
+import app.luma.standby.R
 import app.luma.standby.domain.BurnInDrift
 import app.luma.standby.domain.model.BrightnessProfile
 import app.luma.standby.domain.model.FaceStyle
@@ -134,6 +140,20 @@ class ClockView @JvmOverloads constructor(
     private var bannerText: String? = null
 
     private var widgetTiles: List<WidgetTile> = emptyList()
+    private var activeAlert: StandbyNotificationAlert? = null
+    private var unreadSummary: UnreadNotificationSummary? = null
+    private val unreadPillBounds = RectF()
+    private val appIconCache = LinkedHashMap<String, Drawable?>(8, 0.75f, true)
+    private val nightRedIconFilter = ColorMatrixColorFilter(
+        ColorMatrix(
+            floatArrayOf(
+                0.35f, 0.55f, 0.10f, 0f, 32f,
+                0.04f, 0.06f, 0.02f, 0f, 0f,
+                0.03f, 0.05f, 0.02f, 0f, 0f,
+                0f, 0f, 0f, 1f, 0f,
+            ),
+        ),
+    )
 
     /** Called once per redraw, before the frame is drawn. */
     var onTick: (() -> Unit)? = null
@@ -220,6 +240,40 @@ class ClockView @JvmOverloads constructor(
         if (changed) invalidate()
     }
 
+    /** Show or dismiss the full-screen iOS StandBy incoming notification overlay. */
+    fun setActiveAlert(alert: StandbyNotificationAlert?) {
+        if (alert == activeAlert) return
+        activeAlert = alert
+        invalidate()
+    }
+
+    /** Show or hide the sleek top-center Liquid Glass unread notification pill. */
+    fun setUnreadSummary(summary: UnreadNotificationSummary?) {
+        if (summary == unreadSummary) return
+        unreadSummary = summary
+        if (summary == null) unreadPillBounds.setEmpty()
+        invalidate()
+    }
+
+    /** Returns true if a tap lands on the top unread notification pill (with generous touch pad). */
+    fun hitTestUnreadPill(x: Float, y: Float): Boolean {
+        if (activeAlert != null || unreadSummary == null || unreadPillBounds.isEmpty) return false
+        val pad = 28f
+        return x >= unreadPillBounds.left - pad &&
+            x <= unreadPillBounds.right + pad &&
+            y >= unreadPillBounds.top - pad &&
+            y <= unreadPillBounds.bottom + pad
+    }
+
+    /** Drops all in-memory notification content & cached app icons (pause / screen-off). */
+    fun clearSensitiveMemory() {
+        activeAlert = null
+        unreadSummary = null
+        unreadPillBounds.setEmpty()
+        appIconCache.clear()
+        invalidate()
+    }
+
     fun resumeTicking() {
         registerTimeReceiver()
         scheduler.start()
@@ -241,6 +295,7 @@ class ClockView @JvmOverloads constructor(
         scheduler.stop()
         hintHandler.removeCallbacks(hideHint)
         unregisterTimeReceiver()
+        appIconCache.clear()
         super.onDetachedFromWindow()
     }
 
@@ -300,7 +355,14 @@ class ClockView @JvmOverloads constructor(
             }
         }
 
-        drawTransientIndicator(canvas, w, h, nightRed, darkSurface)
+        val alert = activeAlert
+        if (alert != null) {
+            unreadPillBounds.setEmpty()
+            drawNotificationOverlay(canvas, w, h, alert, nightRed, darkSurface)
+        } else {
+            drawUnreadNotificationPill(canvas, w, h, nightRed, darkSurface)
+            drawTransientIndicator(canvas, w, h, nightRed, darkSurface)
+        }
         canvas.restore()
     }
 
@@ -748,19 +810,8 @@ class ClockView @JvmOverloads constructor(
             String.format(Locale.US, "%s:%02d", hourText, minute)
         }
 
-        // Companion vibrant duo-tone colors for Float
-        val pairA = when {
-            nightRed -> Color.parseColor("#FF3B30")
-            !darkSurface -> colors.primary
-            colors.accent == colors.primary -> Color.parseColor("#0A84FF")
-            else -> colors.accent
-        }
-        val pairB = when {
-            nightRed -> Color.parseColor("#C7241B")
-            !darkSurface -> colors.accent
-            colors.accent == colors.primary -> Color.parseColor("#64D2FF")
-            else -> colors.primary
-        }
+        // Harmonized iOS StandBy Float duo-tone palette (never flat gray-white vs harsh red)
+        val (pairATop, pairABot, pairBTop, pairBBot) = floatPairColors(nightRed, darkSurface)
 
         // Measure exact tight glyph ink widths at reference size using Fredoka Bold
         val refSize = 300f
@@ -773,8 +824,8 @@ class ClockView @JvmOverloads constructor(
         numeralFillPaint.getTextBounds("8", 0, 1, textBounds)
         val refInkH = textBounds.height().toFloat().coerceAtLeast(1f)
         val refDigitW = textBounds.width().toFloat().coerceAtLeast(1f)
-        val overlapPxRef = -refDigitW * 0.105f
-        val colonSlotRef = refDigitW * 0.25f
+        val overlapPxRef = -refDigitW * 0.10f
+        val colonSlotRef = refDigitW * 0.30f
 
         val glyphWidths = FloatArray(text.length)
         var totalRefW = 0f
@@ -796,8 +847,8 @@ class ClockView @JvmOverloads constructor(
             }
         }
 
-        val scaleByH = (box.height * 0.88f) / refInkH
-        val scaleByW = (box.width * 0.96f) / totalRefW.coerceAtLeast(1f)
+        val scaleByH = (box.height * 0.87f) / refInkH
+        val scaleByW = (box.width * 0.95f) / totalRefW.coerceAtLeast(1f)
         val scale = min(scaleByH, scaleByW)
         val textSize = refSize * scale
         val inkH = refInkH * scale
@@ -808,6 +859,8 @@ class ClockView @JvmOverloads constructor(
         numeralFillPaint.textSize = textSize
         numeralOverlayPaint.typeface = floatFace
         numeralOverlayPaint.textSize = textSize
+        numeralRimPaint.typeface = floatFace
+        numeralRimPaint.textSize = textSize
 
         var cursorX = box.centerX - totalW * 0.5f
         val centerY = box.centerY
@@ -837,32 +890,37 @@ class ClockView @JvmOverloads constructor(
             val gy = centerY + dy - textBounds.exactCenterY()
             val rot = rotPattern[digitIdx % rotPattern.size]
 
-            val baseColor = if (digitIdx % 2 == 0) pairA else pairB
-            val topColor = shiftLuminance(baseColor, if (darkSurface) 0.18f else -0.06f)
-            val botColor = shiftLuminance(baseColor, if (darkSurface) -0.12f else 0.08f)
-            val bodyAlpha = if (digitIdx % 2 == 0) 244 else 224
+            val isEven = digitIdx % 2 == 0
+            val topColor = if (isEven) pairATop else pairBTop
+            val botColor = if (isEven) pairABot else pairBBot
+            val bodyAlpha = if (isEven) 246 else 224
 
             canvas.save()
             canvas.rotate(rot, cursorX + slotW * 0.5f, centerY + dy)
 
-            // Primary luminous gradient body (alpha ALWAYS reset to 255 on Paint!)
+            // 1. Primary sculpted 3-stop diagonal gradient body (alpha ALWAYS reset to 255!)
+            val midColor = blendColor(topColor, botColor, 0.45f)
             numeralFillPaint.alpha = 255
             numeralFillPaint.xfermode = null
             numeralFillPaint.shader = LinearGradient(
-                cursorX, centerY - inkH * 0.55f,
-                cursorX + slotW * 0.35f, centerY + inkH * 0.55f,
-                withExactAlpha(topColor, bodyAlpha),
-                withExactAlpha(botColor, bodyAlpha),
+                cursorX, centerY - inkH * 0.56f,
+                cursorX + slotW * 0.45f, centerY + inkH * 0.56f,
+                intArrayOf(
+                    withExactAlpha(topColor, bodyAlpha),
+                    withExactAlpha(midColor, bodyAlpha),
+                    withExactAlpha(botColor, bodyAlpha),
+                ),
+                floatArrayOf(0f, 0.42f, 1f),
                 Shader.TileMode.CLAMP,
             )
             canvas.drawText(s, gx, gy, numeralFillPaint)
             numeralFillPaint.shader = null
 
-            // Translucent luminous shimmer on overlapping companion digits using SEPARATE paint
-            if (darkSurface && !nightRed && digitIdx % 2 == 1) {
+            // 2. Luminous translucent overlap bloom on companion digits (SEPARATE paint!)
+            if (darkSurface && !nightRed && !isEven) {
                 numeralOverlayPaint.xfermode = screenBlendMode
                 numeralOverlayPaint.shader = null
-                numeralOverlayPaint.color = withExactAlpha(topColor, 58)
+                numeralOverlayPaint.color = withExactAlpha(topColor, 76)
                 canvas.drawText(s, gx, gy, numeralOverlayPaint)
                 numeralOverlayPaint.xfermode = null
                 numeralOverlayPaint.alpha = 255
@@ -875,23 +933,73 @@ class ClockView @JvmOverloads constructor(
             digitIdx++
         }
 
-        // Refined frosted colon dots (proportionate, gently offset like real iOS Float)
-        val dotR = (inkH * 0.054f).coerceIn(5f, 42f)
-        val dotColor = when {
-            nightRed -> Color.argb(232, 255, 69, 58)
-            darkSurface -> Color.argb(240, 246, 249, 255)
-            else -> withAlpha(colors.secondary, 0.85f)
+        // Refined pearlescent frosted colon dots
+        val dotR = (inkH * 0.052f).coerceIn(5f, 40f)
+        val dotTop = when {
+            nightRed -> Color.argb(235, 255, 82, 72)
+            darkSurface -> blendColor(Color.argb(246, 255, 255, 255), withExactAlpha(pairBTop, 246), 0.22f)
+            else -> withAlpha(colors.secondary, 0.88f)
+        }
+        val dotBot = when {
+            nightRed -> Color.argb(210, 210, 34, 26)
+            darkSurface -> blendColor(Color.argb(220, 215, 224, 238), withExactAlpha(pairBBot, 220), 0.30f)
+            else -> withAlpha(colors.secondary, 0.72f)
+        }
+        for (cx in colonCenters) {
+            val tilt = dotR * 0.14f
+            val y1 = centerY - inkH * 0.145f
+            val y2 = centerY + inkH * 0.145f
+            colonPaint.shader = LinearGradient(cx, y1 - dotR, cx, y1 + dotR, dotTop, dotBot, Shader.TileMode.CLAMP)
+            canvas.drawCircle(cx + tilt, y1, dotR, colonPaint)
+            colonPaint.shader = LinearGradient(cx, y2 - dotR, cx, y2 + dotR, dotTop, dotBot, Shader.TileMode.CLAMP)
+            canvas.drawCircle(cx - tilt, y2, dotR, colonPaint)
         }
         colonPaint.shader = null
-        colonPaint.color = dotColor
-        for (cx in colonCenters) {
-            val tilt = dotR * 0.16f
-            canvas.drawCircle(cx + tilt, centerY - inkH * 0.145f, dotR, colonPaint)
-            canvas.drawCircle(cx - tilt, centerY + inkH * 0.145f, dotR, colonPaint)
-        }
 
         canvas.restoreToCount(layerId)
     }
+
+    /**
+     * Curated luminous duo-tone gradients for [FaceStyle.FLOAT].
+     * Ensures white-primary themes (StandBy Coral, StandBy Mint) blossom into rich
+     * harmonious Apple pastel/glass companions instead of flat gray-white vs red.
+     */
+    private fun floatPairColors(nightRed: Boolean, darkSurface: Boolean): FloatColorQuad {
+        if (nightRed) {
+            return FloatColorQuad(
+                aTop = Color.parseColor("#FF4A3F"),
+                aBot = Color.parseColor("#C72219"),
+                bTop = Color.parseColor("#C92A22"),
+                bBot = Color.parseColor("#85120C"),
+            )
+        }
+        if (!darkSurface) {
+            return FloatColorQuad(
+                aTop = shiftLuminance(colors.primary, -0.05f),
+                aBot = shiftLuminance(colors.primary, 0.08f),
+                bTop = shiftLuminance(colors.accent, -0.04f),
+                bBot = shiftLuminance(colors.accent, 0.10f),
+            )
+        }
+        // When primary is near-white (e.g. StandBy Coral / StandBy Mint), harmonize with a vibrant warm/cool companion
+        if (isNearWhite(colors.primary) && !isNearWhite(colors.accent)) {
+            val accentTop = blendColor(shiftLuminance(colors.accent, 0.16f), Color.WHITE, 0.18f)
+            val accentBot = shiftLuminance(colors.accent, -0.16f)
+            val pastelTop = blendColor(Color.WHITE, colors.accent, 0.22f)
+            val pastelBot = blendColor(Color.WHITE, colors.accent, 0.52f)
+            return FloatColorQuad(accentTop, accentBot, pastelTop, pastelBot)
+        }
+        val baseA = if (colors.accent == colors.primary) Color.parseColor("#0A84FF") else colors.accent
+        val baseB = if (colors.accent == colors.primary) Color.parseColor("#64D2FF") else colors.primary
+        return FloatColorQuad(
+            aTop = blendColor(shiftLuminance(baseA, 0.16f), Color.WHITE, 0.12f),
+            aBot = shiftLuminance(baseA, -0.12f),
+            bTop = blendColor(shiftLuminance(baseB, 0.16f), Color.WHITE, 0.18f),
+            bBot = shiftLuminance(baseB, -0.08f),
+        )
+    }
+
+    private data class FloatColorQuad(val aTop: Int, val aBot: Int, val bTop: Int, val bBot: Int)
 
     // -------------------------------------------------------------------------
     // Face 4: iOS 26/27 Liquid Glass + Solar Horizon Fullscreen Digital Clock
@@ -1986,6 +2094,333 @@ class ClockView @JvmOverloads constructor(
             WidgetGlyph.SNOW, WidgetGlyph.FOG -> Color.parseColor("#334456") to Color.parseColor("#586F85")
             else -> Color.parseColor("#1B4375") to Color.parseColor("#3A75B5")
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // iOS 26/27 StandBy Notifications: Full-Screen Ambient Alert + Top Pill
+    // -------------------------------------------------------------------------
+
+    /**
+     * Sleek top-center Liquid Glass notification capsule visible on all 4 faces
+     * when active unread notifications exist. Tapping it opens the full-screen alert.
+     */
+    private fun drawUnreadNotificationPill(
+        canvas: Canvas,
+        w: Float,
+        h: Float,
+        nightRed: Boolean,
+        darkSurface: Boolean,
+    ) {
+        val summary = unreadSummary
+        if (summary == null || summary.count <= 0) {
+            unreadPillBounds.setEmpty()
+            return
+        }
+
+        val pillH = (h * 0.056f).coerceIn(28f, 72f)
+        val pillTop = (h * 0.036f).coerceAtLeast(10f)
+        val padX = pillH * 0.42f
+        val iconSize = pillH * 0.56f
+        val iconGap = pillH * 0.24f
+
+        val label = if (summary.count > 1) {
+            "${summary.appLabel} · ${context.getString(R.string.notif_count_pill, summary.count)}"
+        } else {
+            summary.appLabel
+        }
+
+        widgetSecondaryPaint.typeface = roundedBold
+        widgetSecondaryPaint.textSize = pillH * 0.44f
+        val maxTextW = (w * 0.34f).coerceAtLeast(pillH * 2f)
+        val clipped = TextUtils.ellipsize(label, widgetSecondaryPaint, maxTextW, TextUtils.TruncateAt.END).toString()
+        val textW = widgetSecondaryPaint.measureText(clipped)
+
+        val pillW = padX * 2f + iconSize + iconGap + textW
+        val pillLeft = w * 0.5f - pillW * 0.5f
+        val pillBox = FaceBox(pillLeft, pillTop, pillLeft + pillW, pillTop + pillH)
+        unreadPillBounds.set(pillBox.left, pillBox.top, pillBox.right, pillBox.bottom)
+
+        val fillTop = when {
+            nightRed -> Color.argb(175, 38, 6, 6)
+            darkSurface -> Color.argb(170, 32, 34, 42)
+            else -> Color.argb(200, 242, 244, 248)
+        }
+        val fillBot = when {
+            nightRed -> Color.argb(190, 20, 2, 2)
+            darkSurface -> Color.argb(185, 18, 20, 26)
+            else -> Color.argb(215, 228, 232, 238)
+        }
+        drawGlassCard(canvas, pillBox, pillH * 0.5f, fillTop, fillBot, nightRed, darkSurface)
+
+        val iconLeft = pillBox.left + padX
+        val iconTop = pillBox.centerY - iconSize * 0.5f
+        val appDrawable = loadAppIcon(summary.packageName)
+        if (appDrawable != null) {
+            drawSquircleAppIcon(canvas, appDrawable, iconLeft, iconTop, iconSize, nightRed)
+        } else {
+            val dotColor = if (nightRed) Color.parseColor("#FF453A") else vibrantGlowAccent()
+            WidgetIcons.draw(canvas, WidgetGlyph.BELL, iconLeft, iconTop, iconSize, dotColor, nightRed = nightRed)
+        }
+
+        widgetSecondaryPaint.color = when {
+            nightRed -> Color.parseColor("#FF453A")
+            darkSurface -> Color.argb(242, 255, 255, 255)
+            else -> colors.primary
+        }
+        val textY = pillBox.centerY - (widgetSecondaryPaint.ascent() + widgetSecondaryPaint.descent()) * 0.5f
+        canvas.drawText(clipped, iconLeft + iconSize + iconGap, textY, widgetSecondaryPaint)
+    }
+
+    /**
+     * 1:1 iOS 26/27 StandBy Full-Screen Incoming Notification Overlay:
+     * Frosted dark backdrop + ambient radial halo + centered Liquid Glass hero card
+     * featuring giant squircle app icon, bold desk-legible title (or Tap-to-View privacy shield),
+     * and sleek iOS bottom pill handle.
+     */
+    private fun drawNotificationOverlay(
+        canvas: Canvas,
+        w: Float,
+        h: Float,
+        alert: StandbyNotificationAlert,
+        nightRed: Boolean,
+        darkSurface: Boolean,
+    ) {
+        // 1. Frosted ambient backdrop dimming the underlying clock softly
+        cardFillPaint.shader = null
+        cardFillPaint.color = when {
+            nightRed -> Color.argb(236, 0, 0, 0)
+            darkSurface -> Color.argb(222, 4, 5, 8)
+            else -> Color.argb(205, 228, 231, 238)
+        }
+        canvas.drawRect(0f, 0f, w, h, cardFillPaint)
+
+        // 2. Subtle radial ambient halo behind the alert card
+        val accentGlow = if (nightRed) Color.parseColor("#B81D16") else vibrantGlowAccent()
+        if (darkSurface) {
+            val haloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                shader = RadialGradient(
+                    w * 0.5f, h * 0.5f, max(w, h) * 0.46f,
+                    intArrayOf(withAlpha(accentGlow, if (nightRed) 0.22f else 0.28f), Color.TRANSPARENT),
+                    floatArrayOf(0f, 1f),
+                    Shader.TileMode.CLAMP,
+                )
+            }
+            canvas.drawRect(0f, 0f, w, h, haloPaint)
+        }
+
+        // 3. Centered Liquid Glass Hero Notification Card
+        val landscape = w >= h
+        val cardW = if (landscape) min(w * 0.76f, h * 1.66f) else w * 0.90f
+        val cardH = if (landscape) min(h * 0.58f, cardW * 0.44f) else min(h * 0.34f, w * 0.62f)
+        val cardBox = FaceBox(
+            w * 0.5f - cardW * 0.5f,
+            h * 0.5f - cardH * 0.5f,
+            w * 0.5f + cardW * 0.5f,
+            h * 0.5f + cardH * 0.5f,
+        )
+        val cornerR = min(cardW, cardH) * 0.145f
+        val cardTop = when {
+            nightRed -> Color.argb(242, 20, 4, 4)
+            darkSurface -> Color.argb(232, 34, 36, 45)
+            else -> Color.argb(242, 250, 251, 253)
+        }
+        val cardBot = when {
+            nightRed -> Color.argb(248, 8, 1, 1)
+            darkSurface -> Color.argb(242, 18, 20, 26)
+            else -> Color.argb(248, 236, 239, 245)
+        }
+        drawGlassCard(canvas, cardBox, cornerR, cardTop, cardBot, nightRed, darkSurface)
+
+        val padX = cardH * 0.14f
+        val iconSize = (cardH * 0.44f).coerceAtMost(cardW * 0.24f)
+        val iconLeft = cardBox.left + padX
+        val iconTop = cardBox.centerY - iconSize * 0.5f
+
+        // Giant iOS continuous squircle App Icon (or vibrant bell badge fallback)
+        val appDrawable = loadAppIcon(alert.packageName)
+        if (appDrawable != null) {
+            drawSquircleAppIcon(canvas, appDrawable, iconLeft, iconTop, iconSize, nightRed)
+        } else {
+            val badgeTint = if (nightRed) Color.parseColor("#FF3B30") else vibrantGlowAccent()
+            val iconBox = FaceBox(iconLeft, iconTop, iconLeft + iconSize, iconTop + iconSize)
+            drawGlassCard(
+                canvas, iconBox, iconSize * 0.23f,
+                shiftLuminance(badgeTint, 0.10f),
+                shiftLuminance(badgeTint, -0.16f),
+                nightRed, darkSurface, skyCard = !nightRed,
+            )
+            val glyphSize = iconSize * 0.54f
+            WidgetIcons.draw(
+                canvas, WidgetGlyph.BELL,
+                iconLeft + (iconSize - glyphSize) * 0.5f,
+                iconTop + (iconSize - glyphSize) * 0.5f,
+                glyphSize,
+                if (nightRed) Color.BLACK else Color.WHITE,
+                nightRed = nightRed,
+            )
+        }
+
+        // Right content column: App Name · now + oversized desk-legible Title / Tap-to-View shield
+        val textLeft = iconLeft + iconSize + padX * 0.85f
+        val textRight = cardBox.right - padX
+        val availW = (textRight - textLeft).coerceAtLeast(1f)
+        val primaryText = when {
+            nightRed -> Color.parseColor("#FF3B30")
+            darkSurface -> Color.WHITE
+            else -> Color.parseColor("#1C1C1E")
+        }
+        val secondaryText = when {
+            nightRed -> Color.argb(185, 255, 69, 58)
+            darkSurface -> Color.argb(175, 235, 240, 250)
+            else -> Color.argb(165, 28, 28, 30)
+        }
+
+        // Top metadata line: App Name · 刚刚  (+ optional "+N more" pill)
+        val metaText = "${alert.appLabel}  ·  ${context.getString(R.string.notif_just_now)}"
+        widgetSecondaryPaint.typeface = roundedBold
+        widgetSecondaryPaint.textSize = (cardH * 0.095f).coerceIn(14f, 44f)
+        widgetSecondaryPaint.color = secondaryText
+
+        val metaY = cardBox.top + cardH * 0.28f
+        var metaAvail = availW
+        if (alert.unreadCount > 1) {
+            val moreLabel = context.getString(R.string.notif_more_badge, alert.unreadCount - 1)
+            val moreSize = (cardH * 0.072f).coerceIn(12f, 32f)
+            dateHeaderPaint.typeface = roundedBold
+            dateHeaderPaint.textSize = moreSize
+            val moreTw = dateHeaderPaint.measureText(moreLabel)
+            val morePadX = moreSize * 0.65f
+            val moreH = moreSize * 1.75f
+            val moreW = moreTw + morePadX * 2f
+            val moreBox = FaceBox(textRight - moreW, metaY - moreH * 0.72f, textRight, metaY + moreH * 0.28f)
+            drawGlassCard(
+                canvas, moreBox, moreH * 0.5f,
+                if (nightRed) Color.argb(60, 255, 59, 48) else if (darkSurface) Color.argb(40, 255, 255, 255) else Color.argb(20, 0, 0, 0),
+                if (nightRed) Color.argb(36, 255, 59, 48) else if (darkSurface) Color.argb(24, 255, 255, 255) else Color.argb(14, 0, 0, 0),
+                nightRed, darkSurface,
+            )
+            dateHeaderPaint.textAlign = Paint.Align.CENTER
+            dateHeaderPaint.color = secondaryText
+            val my = moreBox.centerY - (dateHeaderPaint.ascent() + dateHeaderPaint.descent()) * 0.5f
+            canvas.drawText(moreLabel, moreBox.centerX, my, dateHeaderPaint)
+            dateHeaderPaint.textAlign = Paint.Align.LEFT
+            metaAvail = (availW - moreW - padX * 0.35f).coerceAtLeast(1f)
+        }
+        val clippedMeta = TextUtils.ellipsize(metaText, widgetSecondaryPaint, metaAvail, TextUtils.TruncateAt.END).toString()
+        canvas.drawText(clippedMeta, textLeft, metaY, widgetSecondaryPaint)
+
+        // Main Hero Body
+        if (alert.isMasked) {
+            // Iconic iOS StandBy Privacy Shield ("新通知" + frosted "轻点查看" capsule)
+            widgetPrimaryPaint.typeface = roundedExtraBold
+            widgetPrimaryPaint.textSize = (cardH * 0.175f).coerceIn(22f, 82f)
+            widgetPrimaryPaint.color = primaryText
+            val maskedTitle = context.getString(R.string.notif_new)
+            val clippedTitle = TextUtils.ellipsize(maskedTitle, widgetPrimaryPaint, availW, TextUtils.TruncateAt.END).toString()
+            canvas.drawText(clippedTitle, textLeft, cardBox.top + cardH * 0.56f, widgetPrimaryPaint)
+
+            if (alert.tapToReveal && !alert.isPrivateRedacted) {
+                val tapLabel = context.getString(R.string.notif_tap_to_view)
+                val tapSize = (cardH * 0.082f).coerceIn(13f, 36f)
+                dateHeaderPaint.typeface = roundedBold
+                dateHeaderPaint.textSize = tapSize
+                val tw = dateHeaderPaint.measureText(tapLabel)
+                val pPadX = tapSize * 0.9f
+                val pH = tapSize * 1.95f
+                val pW = min(tw + pPadX * 2f, availW)
+                val pTop = cardBox.top + cardH * 0.65f
+                val pillBox = FaceBox(textLeft, pTop, textLeft + pW, pTop + pH)
+                drawGlassCard(
+                    canvas, pillBox, pH * 0.5f,
+                    if (nightRed) Color.argb(80, 255, 59, 48) else if (darkSurface) Color.argb(56, 255, 255, 255) else Color.argb(26, 0, 0, 0),
+                    if (nightRed) Color.argb(46, 255, 59, 48) else if (darkSurface) Color.argb(30, 255, 255, 255) else Color.argb(16, 0, 0, 0),
+                    nightRed, darkSurface,
+                )
+                dateHeaderPaint.textAlign = Paint.Align.CENTER
+                dateHeaderPaint.color = primaryText
+                val py = pillBox.centerY - (dateHeaderPaint.ascent() + dateHeaderPaint.descent()) * 0.5f
+                canvas.drawText(tapLabel, pillBox.centerX, py, dateHeaderPaint)
+                dateHeaderPaint.textAlign = Paint.Align.LEFT
+            }
+        } else {
+            // Unmasked Public Title: up to 2 bold lines, crisp & legible from across the room
+            widgetPrimaryPaint.typeface = roundedExtraBold
+            widgetPrimaryPaint.color = primaryText
+            val baseSize = (cardH * 0.165f).coerceIn(22f, 78f)
+            widgetPrimaryPaint.textSize = baseSize
+            val staticLayout = StaticLayout.Builder
+                .obtain(alert.title, 0, alert.title.length, widgetPrimaryPaint, availW.toInt().coerceAtLeast(1))
+                .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+                .setMaxLines(2)
+                .setEllipsize(TextUtils.TruncateAt.END)
+                .setIncludePad(false)
+                .setLineSpacing(0f, 1.12f)
+                .build()
+            val textTop = cardBox.top + cardH * 0.38f
+            canvas.save()
+            canvas.translate(textLeft, textTop)
+            staticLayout.draw(canvas)
+            canvas.restore()
+        }
+
+        // Subtle iOS home-grabber dismiss bar along the card bottom
+        val barW = cardW * 0.12f
+        val barH = (cardH * 0.016f).coerceIn(3f, 7f)
+        val barY = cardBox.bottom - cardH * 0.068f
+        cardFillPaint.shader = null
+        cardFillPaint.color = if (nightRed) Color.argb(82, 255, 69, 58) else if (darkSurface) Color.argb(64, 255, 255, 255) else Color.argb(46, 0, 0, 0)
+        rectScratch.set(cardBox.centerX - barW * 0.5f, barY, cardBox.centerX + barW * 0.5f, barY + barH)
+        canvas.drawRoundRect(rectScratch, barH * 0.5f, barH * 0.5f, cardFillPaint)
+    }
+
+    private fun drawSquircleAppIcon(
+        canvas: Canvas,
+        drawable: Drawable,
+        left: Float,
+        top: Float,
+        size: Float,
+        nightRed: Boolean,
+    ) {
+        val cornerR = size * 0.225f
+        canvas.save()
+        clipPath.reset()
+        rectScratch.set(left, top, left + size, top + size)
+        clipPath.addRoundRect(rectScratch, cornerR, cornerR, Path.Direction.CW)
+        canvas.clipPath(clipPath)
+        drawable.setBounds(left.toInt(), top.toInt(), (left + size).toInt(), (top + size).toInt())
+        drawable.colorFilter = if (nightRed) nightRedIconFilter else null
+        drawable.draw(canvas)
+        drawable.colorFilter = null
+        canvas.restore()
+
+        // Hairline Liquid Glass specular edge around the app icon squircle
+        val rimW = (size * 0.014f).coerceIn(1.2f, 2.4f)
+        cardRimPaint.strokeWidth = rimW
+        cardRimPaint.shader = LinearGradient(
+            left, top, left + size, top + size,
+            intArrayOf(
+                if (nightRed) Color.argb(95, 255, 69, 58) else Color.argb(115, 255, 255, 255),
+                Color.TRANSPARENT,
+                if (nightRed) Color.argb(50, 255, 69, 58) else Color.argb(58, 255, 255, 255),
+            ),
+            floatArrayOf(0f, 0.5f, 1f),
+            Shader.TileMode.CLAMP,
+        )
+        innerScratch.set(left + rimW * 0.5f, top + rimW * 0.5f, left + size - rimW * 0.5f, top + size - rimW * 0.5f)
+        canvas.drawRoundRect(innerScratch, cornerR, cornerR, cardRimPaint)
+        cardRimPaint.shader = null
+    }
+
+    private fun loadAppIcon(packageName: String?): Drawable? {
+        if (packageName.isNullOrBlank()) return null
+        if (appIconCache.containsKey(packageName)) return appIconCache[packageName]
+        val icon = runCatching { context.packageManager.getApplicationIcon(packageName) }.getOrNull()
+        if (appIconCache.size >= 8) {
+            val eldest = appIconCache.keys.firstOrNull()
+            if (eldest != null) appIconCache.remove(eldest)
+        }
+        appIconCache[packageName] = icon
+        return icon
     }
 
     // -------------------------------------------------------------------------

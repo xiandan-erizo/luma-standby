@@ -185,4 +185,9 @@
     <string name="style_split">Split</string>
     <string name="style_float">Float</string>
     <string name="style_solar">Liquid Solar</string>
+    <string name="notif_just_now">now</string>
+    <string name="notif_new">New Notification</string>
+    <string name="notif_tap_to_view">Tap to view</string>
+    <string name="notif_count_pill">%1$d notifications</string>
+    <string name="notif_more_badge">+%1$d more</string>
 </resources>

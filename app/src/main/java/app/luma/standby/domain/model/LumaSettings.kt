@@ -31,6 +31,8 @@ data class LumaSettings(
     val weatherCity: String? = null,
     val weatherLat: Double? = null,
     val weatherLon: Double? = null,
+    val notificationAlerts: Boolean = true,
+    val notificationTapToReveal: Boolean = false,
 )
 
 @Serializable

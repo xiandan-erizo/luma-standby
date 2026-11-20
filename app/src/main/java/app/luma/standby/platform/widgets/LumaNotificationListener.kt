@@ -121,7 +121,13 @@ class LumaNotificationListener : NotificationListenerService() {
         } catch (_: PackageManager.NameNotFoundException) {
             return
         }
-        val info = NotificationPrivacyPolicy.info(mode, label) {
+        val info = NotificationPrivacyPolicy.info(
+            mode = mode,
+            appLabel = label,
+            packageName = sbn.packageName,
+            postTimeMillis = sbn.postTime,
+            key = sbn.key,
+        ) {
             // ONLY public title; never EXTRA_TEXT, BIG_TEXT, MESSAGES or publicVersion extras.
             notification.extras?.getCharSequence(Notification.EXTRA_TITLE)
         }

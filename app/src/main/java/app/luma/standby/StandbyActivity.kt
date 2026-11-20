@@ -4,16 +4,17 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ApplicationInfo
 import android.graphics.Color
 import android.os.Build
-import android.os.PowerManager
-import androidx.core.content.ContextCompat
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.view.MotionEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -24,31 +25,42 @@ import app.luma.standby.domain.NightMode
 import app.luma.standby.domain.model.DisplayMode
 import app.luma.standby.domain.model.FaceStyle
 import app.luma.standby.domain.model.LumaSettings
+import app.luma.standby.domain.theme.PalettePresets
 import app.luma.standby.domain.theme.ThemeEditing
 import app.luma.standby.domain.theme.ThemeRepository
 import app.luma.standby.domain.theme.currentTheme
+import app.luma.standby.domain.widget.NotificationInfo
 import app.luma.standby.platform.battery.BatteryController
 import app.luma.standby.platform.display.BrightnessController
 import app.luma.standby.platform.display.DisplayController
 import app.luma.standby.platform.display.RefreshRatePolicy
 import app.luma.standby.platform.display.RefreshState
 import app.luma.standby.platform.power.PowerController
+import app.luma.standby.platform.widgets.LumaNotificationListener
 import app.luma.standby.platform.widgets.WeatherStore
 import app.luma.standby.platform.widgets.WidgetDataCollector
 import app.luma.standby.platform.widgets.WidgetRenderer
 import app.luma.standby.ui.clock.ClockView
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.flow.collectLatest
+import app.luma.standby.ui.clock.DebugAlertBus
+import app.luma.standby.ui.clock.StandbyAlertTracker
+import app.luma.standby.ui.clock.StandbyNotificationAlert
+import app.luma.standby.ui.clock.UnreadNotificationSummary
 import kotlinx.coroutines.flow.MutableSharedFlow
-import app.luma.standby.platform.widgets.LumaNotificationListener
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 /**
  * The in-app standby surface. Works in whatever orientation the phone is held,
  * goes fullscreen and dim, and idles back to the static refresh state after a
  * few seconds of no touching.
  *
- * The screen is *not* kept awake forever: KEEP_SCREEN_ON is only added while a
- * charger is attached, which is exactly the StandBy use case.
+ * Gestures modelled after iOS 26/27 StandBy:
+ * - Swipe up/down: cycle the 4 StandBy faces (Analog / Split / Float / Liquid Solar).
+ * - Swipe left/right: cycle the curated iOS StandBy color palettes while keeping the current face.
+ * - Tap top unread notification pill: open the full-screen iOS StandBy notification card.
+ * - Tap full-screen alert: reveal (if Tap-to-View privacy is on) or dismiss.
+ * - Double-tap clock: exit Standby.
  */
 class StandbyActivity : ComponentActivity() {
 
@@ -63,6 +75,7 @@ class StandbyActivity : ComponentActivity() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val returnToIdle = Runnable { applyRefreshIntent(baselineState()) }
+    private val dismissAlertRunnable = Runnable { dismissNotificationAlert() }
 
     private var stopObservingBattery: (() -> Unit)? = null
     private var settings: LumaSettings = LumaSettings()
@@ -70,13 +83,17 @@ class StandbyActivity : ComponentActivity() {
     private var touchDownX = 0f
     private var touchDownY = 0f
     private var swipeConsumed = false
+
+    private val alertTracker = StandbyAlertTracker()
+    private var activeAlert: StandbyNotificationAlert? = null
+    private var latestNotifications: List<NotificationInfo> = emptyList()
+
     private val widgetTicks = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     private var receiverRegistered = false
     private val screenEvents = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == Intent.ACTION_SCREEN_OFF) {
-                LumaNotificationListener.setCollectionEnabled(false)
-                clockView.setWidgets(emptyList())
+                clearSensitiveState()
             } else {
                 if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
                     applySettings(settings)
@@ -103,6 +120,9 @@ class StandbyActivity : ComponentActivity() {
             addAction(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED)
         }, ContextCompat.RECEIVER_NOT_EXPORTED)
         receiverRegistered = true
+
+        val isDebuggable = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.RESUMED) {
                 launch {
@@ -113,8 +133,6 @@ class StandbyActivity : ComponentActivity() {
                         applyRefreshIntent(baselineState())
                         refreshWidgets()
                         widgetTicks.tryEmit(Unit)
-                        // A newly chosen city must fetch now, not wait for the next minute
-                        // boundary, which is how the weather tile used to look broken.
                         if (latest.weatherCity != previousCity) refreshWidgets()
                     }
                 }
@@ -129,11 +147,31 @@ class StandbyActivity : ComponentActivity() {
                         )
                     }
                 }
+                if (isDebuggable) {
+                    launch {
+                        DebugAlertBus.alerts.collect { previewAlert ->
+                            latestNotifications = listOf(
+                                NotificationInfo(
+                                    appLabel = previewAlert.appLabel,
+                                    title = previewAlert.title,
+                                    packageName = previewAlert.packageName,
+                                    postTimeMillis = System.currentTimeMillis(),
+                                ),
+                            )
+                            clockView.setUnreadSummary(
+                                UnreadNotificationSummary(
+                                    appLabel = previewAlert.appLabel,
+                                    packageName = previewAlert.packageName,
+                                    count = previewAlert.unreadCount,
+                                ),
+                            )
+                            showNotificationAlert(previewAlert)
+                        }
+                    }
+                }
             }
         }
 
-        // Hand-rolled gestures: vertical swipe cycles iOS StandBy faces (just like
-        // swiping up/down on iPhone StandBy), while a clean double-tap exits.
         clockView.isClickable = true
         clockView.setOnTouchListener { _, event ->
             when (event.actionMasked) {
@@ -147,21 +185,46 @@ class StandbyActivity : ComponentActivity() {
                 MotionEvent.ACTION_UP -> {
                     val dx = event.x - touchDownX
                     val dy = event.y - touchDownY
-                    val absDx = kotlin.math.abs(dx)
-                    val absDy = kotlin.math.abs(dy)
-                    if (absDy > SWIPE_THRESHOLD_PX && absDy > absDx * 1.35f) {
+                    val absDx = abs(dx)
+                    val absDy = abs(dy)
+                    val currentAlert = activeAlert
+
+                    if (currentAlert != null) {
+                        // Notification takeover is visible: swipe dismisses; tap reveals or dismisses.
+                        if (absDy > SWIPE_THRESHOLD_PX || absDx > SWIPE_THRESHOLD_PX) {
+                            swipeConsumed = true
+                            lastTapAt = 0L
+                            dismissNotificationAlert()
+                        } else if (absDx < TAP_SLOP_PX && absDy < TAP_SLOP_PX) {
+                            lastTapAt = 0L
+                            if (currentAlert.tapToReveal && !currentAlert.revealed && !currentAlert.isPrivateRedacted) {
+                                showNotificationAlert(currentAlert.copy(revealed = true))
+                            } else {
+                                dismissNotificationAlert()
+                            }
+                        }
+                    } else if (absDy > SWIPE_THRESHOLD_PX && absDy > absDx * 1.35f) {
                         swipeConsumed = true
                         lastTapAt = 0L
                         cycleFaceStyle(step = if (dy < 0f) 1 else -1)
+                    } else if (absDx > SWIPE_THRESHOLD_PX && absDx > absDy * 1.35f) {
+                        swipeConsumed = true
+                        lastTapAt = 0L
+                        cycleIosPalette(step = if (dx < 0f) 1 else -1)
                     } else if (!swipeConsumed && absDx < TAP_SLOP_PX && absDy < TAP_SLOP_PX) {
-                        val now = event.eventTime
-                        if (now - lastTapAt <= DOUBLE_TAP_WINDOW_MS) {
+                        if (clockView.hitTestUnreadPill(event.x, event.y)) {
                             lastTapAt = 0L
-                            clockView.performClick()
-                            finish()
+                            openLatestNotificationAlert()
                         } else {
-                            lastTapAt = now
-                            clockView.flashHint()
+                            val now = event.eventTime
+                            if (now - lastTapAt <= DOUBLE_TAP_WINDOW_MS) {
+                                lastTapAt = 0L
+                                clockView.performClick()
+                                finish()
+                            } else {
+                                lastTapAt = now
+                                clockView.flashHint()
+                            }
                         }
                     }
                 }
@@ -191,14 +254,13 @@ class StandbyActivity : ComponentActivity() {
         super.onResume()
         hideSystemBars()
         clockView.resumeTicking()
-        enterInteractive()
+        enterInteractive(flashHint = false)
     }
 
     override fun onPause() {
         mainHandler.removeCallbacks(returnToIdle)
         clockView.pauseTicking()
-        clockView.setWidgets(emptyList())
-        LumaNotificationListener.setCollectionEnabled(false)
+        clearSensitiveState()
         // The brightness override is window-scoped, but clear it explicitly so a
         // re-shown window never inherits a stale night value.
         brightnessController.restore(window)
@@ -207,6 +269,7 @@ class StandbyActivity : ComponentActivity() {
 
     override fun onDestroy() {
         mainHandler.removeCallbacks(returnToIdle)
+        mainHandler.removeCallbacks(dismissAlertRunnable)
         stopObservingBattery?.invoke()
         stopObservingBattery = null
         if (receiverRegistered) unregisterReceiver(screenEvents)
@@ -214,13 +277,21 @@ class StandbyActivity : ComponentActivity() {
         super.onDestroy()
     }
 
+    private fun clearSensitiveState() {
+        mainHandler.removeCallbacks(dismissAlertRunnable)
+        activeAlert = null
+        latestNotifications = emptyList()
+        alertTracker.reset()
+        LumaNotificationListener.setCollectionEnabled(false)
+        clockView.setWidgets(emptyList())
+        clockView.clearSensitiveMemory()
+    }
+
     private fun applySettings(settings: LumaSettings) {
         val theme = settings.currentTheme()
         clockView.applyState(
             theme = theme,
             use24HourOverride = settings.use24Hour,
-            // Battery saver silently drops seconds: a per-second redraw is exactly
-            // the thing the user asked the platform to stop doing.
             showSecondsOverride = if (powerController.isPowerSaveMode() || settings.mode == DisplayMode.ULTRA_LOW_POWER) false else settings.showSeconds,
             burnInShift = settings.burnInShift,
             hint = getString(R.string.exit_standby_hint),
@@ -238,34 +309,100 @@ class StandbyActivity : ComponentActivity() {
             minuteOfDay = minuteOfDay,
             systemBrightness = brightnessController.systemBrightness01(),
         )
-        // A hot panel is dimmed rather than left to bake; this is a mitigation,
-        // not a thermal policy of our own.
         val thermalFactor = if (powerController.shouldDim()) 0.6f else 1f
         val target = if (requested < 0f) -1f else (requested * thermalFactor).coerceIn(0.01f, 1f)
         brightnessController.apply(window, target)
     }
 
     /**
-     * Widget data is recomputed once per redraw, on the same minute boundary as the
-     * clock. Notification access is the only expensive read and only happens when a
-     * widget actually needs it.
+     * Recomputes widget tiles and handles event-driven iOS StandBy notification alerts.
+     * Sensitive notification collection runs only when unlocked, permission-granted, and visible.
      */
     private fun refreshWidgets() {
-        val enabled = settings.widgetPlacements.map { it.widgetId }.toSet()
         if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return
-        if (enabled.isEmpty()) {
+        val enabled = settings.widgetPlacements.map { it.widgetId }.toSet()
+        val alertsWanted = settings.notificationAlerts && settings.mode != DisplayMode.ULTRA_LOW_POWER
+
+        if (enabled.isEmpty() && !alertsWanted) {
             LumaNotificationListener.setCollectionEnabled(false)
             clockView.setWidgets(emptyList())
+            clockView.setUnreadSummary(null)
             return
         }
 
         val weather = if (enabled.contains("weather")) weatherStore.cached(settings.weatherLat, settings.weatherLon) else null
-
         val data = widgetCollector.collect(
             enabledIds = enabled,
             weather = weather,
+            notificationAlertsEnabled = alertsWanted,
         )
         clockView.setWidgets(WidgetRenderer.tiles(settings, data, context = this))
+
+        if (alertsWanted) {
+            handleNotificationSnapshot(data.notifications)
+        } else {
+            latestNotifications = emptyList()
+            clockView.setUnreadSummary(null)
+            dismissNotificationAlert()
+        }
+    }
+
+    private fun handleNotificationSnapshot(notifications: List<NotificationInfo>) {
+        latestNotifications = notifications
+        val top = notifications.firstOrNull()
+        if (top == null) {
+            clockView.setUnreadSummary(null)
+            dismissNotificationAlert()
+            alertTracker.onSnapshot(emptyList())
+            return
+        }
+
+        clockView.setUnreadSummary(
+            UnreadNotificationSummary(
+                appLabel = top.appLabel,
+                packageName = top.packageName,
+                count = notifications.size,
+            ),
+        )
+
+        val newlyArrived = alertTracker.onSnapshot(notifications)
+        if (newlyArrived != null) {
+            showNotificationAlert(buildAlert(newlyArrived, notifications.size))
+        }
+    }
+
+    private fun openLatestNotificationAlert() {
+        val top = latestNotifications.firstOrNull() ?: return
+        showNotificationAlert(buildAlert(top, latestNotifications.size))
+    }
+
+    private fun buildAlert(info: NotificationInfo, count: Int): StandbyNotificationAlert {
+        val redacted = info.title.equals(info.appLabel, ignoreCase = true)
+        return StandbyNotificationAlert(
+            appLabel = info.appLabel,
+            title = info.title,
+            packageName = info.packageName,
+            unreadCount = count,
+            tapToReveal = settings.notificationTapToReveal,
+            revealed = false,
+            isPrivateRedacted = redacted,
+        )
+    }
+
+    private fun showNotificationAlert(alert: StandbyNotificationAlert) {
+        activeAlert = alert
+        clockView.setActiveAlert(alert)
+        enterInteractive(flashHint = false)
+        mainHandler.removeCallbacks(dismissAlertRunnable)
+        mainHandler.postDelayed(dismissAlertRunnable, ALERT_VISIBLE_MS)
+    }
+
+    private fun dismissNotificationAlert() {
+        mainHandler.removeCallbacks(dismissAlertRunnable)
+        if (activeAlert != null) {
+            activeAlert = null
+            clockView.setActiveAlert(null)
+        }
     }
 
     private fun applyBrightnessIfMinuteChanged() {
@@ -307,6 +444,24 @@ class StandbyActivity : ComponentActivity() {
         }
     }
 
+    private fun cycleIosPalette(step: Int) {
+        val palettes = PalettePresets.groupIos
+        val currentTheme = settings.currentTheme()
+        val idx = palettes.indexOfFirst {
+            it.background.equals(currentTheme.background, ignoreCase = true) &&
+                it.primary.equals(currentTheme.primary, ignoreCase = true) &&
+                it.accent.equals(currentTheme.accent, ignoreCase = true)
+        }.let { if (it < 0) 0 else it }
+        val nextPalette = palettes[(idx + step + palettes.size) % palettes.size]
+        clockView.flashBanner(nextPalette.name)
+        lifecycleScope.launch {
+            repository.update { current ->
+                val updated = ThemeEditing.withPaletteKeepingStyle(current, nextPalette, System.currentTimeMillis())
+                ThemeEditing.upsert(current, updated)
+            }
+        }
+    }
+
     private fun baselineState(): RefreshState = when {
         powerController.isPowerSaveMode() -> RefreshState.ULTRA_LOW_POWER
         settings.mode == DisplayMode.ULTRA_LOW_POWER -> RefreshState.ULTRA_LOW_POWER
@@ -324,10 +479,6 @@ class StandbyActivity : ComponentActivity() {
         val intent = RefreshRatePolicy.intentFor(state, showSeconds)
         RefreshRatePolicy.apply(window, displayController, intent)
 
-        // Second, independent hint: the view-level request is the one SurfaceFlinger
-        // records as the layer's requestedFrameRate. Measured on Xiaomi 17 /
-        // HyperOS 4: the layer records 1.00 Hz, but the platform's per-uid rate
-        // override stays at 60 Hz. See docs/display-api.md.
         runCatching {
             if (Build.VERSION.SDK_INT >= 35) clockView.setRequestedFrameRate(intent.targetFps)
         }
@@ -351,8 +502,7 @@ class StandbyActivity : ComponentActivity() {
 
     private companion object {
         const val IDLE_TIMEOUT_MS = 8_000L
-
-        /** Generous enough for a deliberate double tap, short enough not to fire on two separate taps. */
+        const val ALERT_VISIBLE_MS = 7_500L
         const val DOUBLE_TAP_WINDOW_MS = 600L
         const val SWIPE_THRESHOLD_PX = 96f
         const val TAP_SLOP_PX = 56f

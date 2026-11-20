@@ -62,7 +62,13 @@ data class CalendarInfo(val title: String, val startsAtMillis: Long, val startsT
 
 data class MediaInfo(val title: String, val artist: String?, val playing: Boolean)
 
-data class NotificationInfo(val appLabel: String, val title: String)
+data class NotificationInfo(
+    val appLabel: String,
+    val title: String,
+    val packageName: String? = null,
+    val postTimeMillis: Long = 0L,
+    val key: String? = null,
+)
 
 enum class WidgetKind {
     STANDARD,

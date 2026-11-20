@@ -38,8 +38,8 @@ data class FaceLayout(
             if (w >= h) {
                 if (style == FaceStyle.FLOAT || style == FaceStyle.SOLAR) {
                     return FaceLayout(
-                        clock = FaceBox(w * 0.035f, h * 0.155f, w * 0.965f, h * 0.915f),
-                        date = FaceBox(w * 0.05f, h * 0.045f, w * 0.95f, h * 0.135f),
+                        clock = FaceBox(w * 0.032f, h * 0.135f, w * 0.968f, h * 0.905f),
+                        date = FaceBox(w * 0.05f, h * 0.042f, w * 0.95f, h * 0.128f),
                         rightTiles = emptyList(),
                         leftTile = null,
                     )
