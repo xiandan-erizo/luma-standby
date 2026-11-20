@@ -2148,8 +2148,10 @@ class ClockView @JvmOverloads constructor(
         darkSurface: Boolean,
     ) {
         if (rightWidgets.isEmpty()) {
-            // Iconic iOS StandBy Calendar Hero Square (with mini month calendar grid!)
-            drawCalendarHeroSquare(canvas, layout.date, now, nightRed, darkSurface)
+            // Always use the symmetric right-half square even when only BOTTOM_LEFT has a widget
+            // (so layout.date being a header strip never squishes the Calendar Hero card).
+            val stageBox = FaceBox(layout.date.left, layout.clock.top, layout.date.right, layout.clock.bottom)
+            drawCalendarHeroSquare(canvas, stageBox, now, nightRed, darkSurface)
             return
         }
 
@@ -2789,25 +2791,53 @@ class ClockView @JvmOverloads constructor(
         val box = layout.leftTile ?: return
         val tile = leftWidgets.firstOrNull() ?: return
         val c = tile.content
-        val iconSize = box.height * 0.56f
-        var textLeft = box.left + box.height * 0.22f
+        val pillH = (box.height * 0.82f).coerceIn(24f, 64f)
+        val pillTop = box.centerY - pillH * 0.5f
+        val padX = pillH * 0.38f
+        val iconSize = pillH * 0.50f
+        val iconGap = pillH * 0.22f
+        val combined = if (c.secondary.isNullOrBlank()) c.primary else "${c.primary} · ${c.secondary}"
+
+        widgetSecondaryPaint.typeface = roundedBold
+        widgetSecondaryPaint.textSize = pillH * 0.45f
+        val glyphW = if (c.glyph != WidgetGlyph.NONE) iconSize + iconGap else 0f
+        val maxTextW = (box.width - padX * 2f - glyphW).coerceAtLeast(1f)
+        val textW = (widgetSecondaryPaint.measureText(combined) + 6f).coerceAtMost(maxTextW)
+        val pillW = (padX * 2f + glyphW + textW).coerceAtMost(box.width)
+        val pillBox = FaceBox(box.left, pillTop, box.left + pillW, pillTop + pillH)
+
+        val fillTop = when {
+            nightRed -> Color.argb(38, 255, 59, 48)
+            darkSurface -> Color.argb(34, 255, 255, 255)
+            else -> Color.argb(18, 0, 0, 0)
+        }
+        val fillBot = when {
+            nightRed -> Color.argb(22, 255, 59, 48)
+            darkSurface -> Color.argb(18, 255, 255, 255)
+            else -> Color.argb(12, 0, 0, 0)
+        }
+        drawGlassCard(canvas, pillBox, pillH * 0.5f, fillTop, fillBot, nightRed, darkSurface)
+
+        var textLeft = pillBox.left + padX
         if (c.glyph != WidgetGlyph.NONE) {
             WidgetIcons.draw(
                 canvas, c.glyph,
-                textLeft, box.centerY - iconSize * 0.5f,
+                textLeft, pillBox.centerY - iconSize * 0.5f,
                 iconSize, glyphAccentColor(c, nightRed, darkSurface),
+                secondaryColor = if (nightRed) Color.parseColor("#FF453A") else Color.WHITE,
                 nightRed = nightRed,
             )
-            textLeft += iconSize + box.height * 0.24f
+            textLeft += iconSize + iconGap
         }
-        val avail = (box.right - textLeft).coerceAtLeast(1f)
-        val combined = if (c.secondary.isNullOrBlank()) c.primary else "${c.primary} · ${c.secondary}"
-        widgetPrimaryPaint.typeface = roundedBold
-        widgetPrimaryPaint.color = withAlpha(if (nightRed) Color.parseColor("#FF453A") else colors.primary, 0.85f)
-        widgetPrimaryPaint.textSize = box.height * 0.46f
-        val line = TextUtils.ellipsize(combined, widgetPrimaryPaint, avail, TextUtils.TruncateAt.END).toString()
-        val y = box.centerY - (widgetPrimaryPaint.ascent() + widgetPrimaryPaint.descent()) * 0.5f
-        canvas.drawText(line, textLeft, y, widgetPrimaryPaint)
+        val avail = (pillBox.right - padX - textLeft).coerceAtLeast(1f)
+        widgetSecondaryPaint.color = when {
+            nightRed -> Color.parseColor("#FF453A")
+            darkSurface -> Color.argb(235, 255, 255, 255)
+            else -> colors.primary
+        }
+        val line = TextUtils.ellipsize(combined, widgetSecondaryPaint, avail, TextUtils.TruncateAt.END).toString()
+        val y = pillBox.centerY - (widgetSecondaryPaint.ascent() + widgetSecondaryPaint.descent()) * 0.5f
+        canvas.drawText(line, textLeft, y, widgetSecondaryPaint)
     }
 
     // -------------------------------------------------------------------------
@@ -3156,7 +3186,7 @@ class ClockView @JvmOverloads constructor(
             canvas.drawRoundRect(rectScratch, badgeH * 0.5f, badgeH * 0.5f, cardFillPaint)
 
             dateHeaderPaint.textAlign = Paint.Align.CENTER
-            dateHeaderPaint.color = if (darkSurface) shiftLuminance(accent, 0.20f) else accent
+            dateHeaderPaint.color = if (darkSurface) shiftLuminance(accent, 0.20f) else shiftLuminance(accent, -0.22f)
             val my = badgeBox.centerY - (dateHeaderPaint.ascent() + dateHeaderPaint.descent()) * 0.5f
             canvas.drawText(metric, badgeBox.centerX, my, dateHeaderPaint)
             dateHeaderPaint.textAlign = Paint.Align.LEFT
@@ -3484,7 +3514,11 @@ class ClockView @JvmOverloads constructor(
             darkSurface -> Color.argb(182, 235, 240, 250)
             else -> Color.argb(168, 28, 28, 30)
         }
-        val brightAccent = if (darkSurface && !nightRed) shiftLuminance(accent, 0.18f) else accent
+        val brightAccent = when {
+            nightRed -> accent
+            darkSurface -> shiftLuminance(accent, 0.18f)
+            else -> shiftLuminance(accent, -0.22f)
+        }
         val drift = driftFor()
 
         // Beat 3: Glowing Live Dot + Source Label + Collapse / Switch pills

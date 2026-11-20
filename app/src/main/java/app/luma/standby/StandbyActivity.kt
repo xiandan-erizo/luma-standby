@@ -421,6 +421,7 @@ class StandbyActivity : ComponentActivity() {
     private fun syncHeadsUpSuppression() {
         if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
             settings.notificationAlerts &&
+            settings.mode != DisplayMode.ULTRA_LOW_POWER &&
             settings.suppressSystemHeadsUp
         ) {
             headsUpSuppressor.suppress()

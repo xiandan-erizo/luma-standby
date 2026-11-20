@@ -37,6 +37,7 @@ import app.luma.standby.platform.DeviceReport
 import app.luma.standby.platform.display.DisplayController
 import app.luma.standby.platform.display.RefreshRateSampler
 import app.luma.standby.platform.display.RefreshSample
+import app.luma.standby.platform.widgets.HeadsUpSuppressor
 import app.luma.standby.ui.DiagnosticsScreen
 import app.luma.standby.ui.LumaAppTheme
 import app.luma.standby.ui.PreviewScreen
@@ -45,6 +46,15 @@ import app.luma.standby.ui.WidgetsScreen
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
+
+    private val headsUpSuppressor by lazy { HeadsUpSuppressor(this) }
+
+    override fun onResume() {
+        super.onResume()
+        // If StandbyActivity was killed by an OS restart or app update before onPause ran,
+        // heal our implicit DND rule immediately on returning to the app.
+        headsUpSuppressor.restoreIfLeaked()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

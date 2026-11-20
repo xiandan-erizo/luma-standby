@@ -52,7 +52,8 @@ object ThemeEditing {
     /** Applies a palette's colours while keeping the user's current [FaceStyle] (for horizontal swipe). */
     fun withPaletteKeepingStyle(settings: LumaSettings, palette: LumaTheme, seed: Long): LumaTheme {
         val base = settings.currentTheme()
-        val updated = PalettePresets.applyPalette(base, palette, customId(seed), palette.name)
+        val id = if (!base.builtIn) base.id else customId(seed)
+        val updated = PalettePresets.applyPalette(base, palette, id, palette.name)
         return updated.copy(faceStyle = base.faceStyle)
     }
 

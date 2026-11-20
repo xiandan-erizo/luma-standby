@@ -82,6 +82,27 @@ class StandbyFaceRenderTest {
         assertTrue("Analog + Calendar draws pixels", countNonBlack(analogCalBmp) > 40_000)
         savePng(analogCalBmp, File(snapshotDir, "01_analog_calendar.png"))
 
+        // 1b. Analog + BOTTOM_LEFT battery only (no right widgets): right Calendar Hero must stay full height!
+        val leftOnlySettings = LumaSettings(
+            themeId = "ios-coral",
+            widgetPlacements = listOf(StoredPlacement("battery", "BOTTOM_LEFT")),
+        )
+        val leftOnlyTiles = WidgetRenderer.tiles(
+            settings = leftOnlySettings,
+            data = WidgetData(battery = BatteryInfo(percent = 100, charging = true)),
+            context = context,
+        )
+        val analogLeftOnlyBmp = renderClock(1600, 720, ThemePresets.iosCoral, leftOnlyTiles)
+        // Right half center band must contain the bright calendar card (not a squished top strip).
+        var rightMidNonBlack = 0
+        for (y in 250..500 step 4) {
+            for (x in 900..1350 step 4) {
+                val px = analogLeftOnlyBmp.getPixel(x, y)
+                if (Color.red(px) > 12 || Color.green(px) > 12 || Color.blue(px) > 12) rightMidNonBlack++
+            }
+        }
+        assertTrue("Calendar Hero must fill symmetric right square when only BOTTOM_LEFT is set", rightMidNonBlack > 4000)
+
         // 2. Analog + Weather Hero Square
         val analogWeatherBmp = renderClock(1600, 720, ThemePresets.iosCoral, sampleTiles.take(1))
         assertTrue("Analog + Weather hero draws pixels", countNonBlack(analogWeatherBmp) > 60_000)
@@ -196,6 +217,16 @@ class StandbyFaceRenderTest {
         assertTrue(merged and NotificationManager.Policy.SUPPRESSED_EFFECT_BADGE != 0)
         assertTrue(HeadsUpPolicyMath.ALL_AUDIBLE_CATEGORIES and NotificationManager.Policy.PRIORITY_CATEGORY_ALARMS != 0)
         assertTrue(HeadsUpPolicyMath.ALL_AUDIBLE_CATEGORIES and NotificationManager.Policy.PRIORITY_CATEGORY_CALLS != 0)
+        // Android 15+ restores via INTERRUPTION_FILTER_ALL (deactivating only our app's implicit ZenRule);
+        // older SDKs restore the exact pre-Standby saved filter.
+        assertEquals(
+            NotificationManager.INTERRUPTION_FILTER_ALL,
+            HeadsUpPolicyMath.restoreFilter(NotificationManager.INTERRUPTION_FILTER_PRIORITY, sdkInt = 35),
+        )
+        assertEquals(
+            NotificationManager.INTERRUPTION_FILTER_NONE,
+            HeadsUpPolicyMath.restoreFilter(NotificationManager.INTERRUPTION_FILTER_NONE, sdkInt = 34),
+        )
     }
 
     @Test
@@ -211,6 +242,13 @@ class StandbyFaceRenderTest {
         val recolored = ThemeEditing.withPaletteKeepingStyle(floatSettings, ThemePresets.iosMint, 2L)
         assertEquals(FaceStyle.FLOAT, recolored.faceStyle)
         assertEquals(ThemePresets.iosMint.accent, recolored.accent)
+
+        // Repeated horizontal palette swipes reuse the active custom theme ID instead of bloating customThemes.
+        val afterFirst = ThemeEditing.upsert(floatSettings, recolored)
+        val secondSwipe = ThemeEditing.withPaletteKeepingStyle(afterFirst, ThemePresets.iosCoral, 3L)
+        val afterSecond = ThemeEditing.upsert(afterFirst, secondSwipe)
+        assertEquals(1, afterSecond.customThemes.size)
+        assertEquals(recolored.id, secondSwipe.id)
 
         val floatFull = FaceLayout.create(2400f, 1080f, withWidgets = true, style = FaceStyle.FLOAT)
         assertTrue(floatFull.clock.width > 2000f)
@@ -364,6 +402,38 @@ class StandbyFaceRenderTest {
         musicView.draw(Canvas(musicBmp))
         savePng(musicBmp, File(outDir, "12_island_expanded_music.png"))
         assertTrue(countBright(musicBmp) > 8000)
+
+        // 4. Light Paper Theme + Expanded Super Island contrast verification
+        val lightView = ClockView(context)
+        lightView.animationsEnabled = false
+        lightView.applyState(ThemePresets.bone.copy(faceStyle = FaceStyle.FLOAT), true, false, false, null)
+        lightView.setLiveActivities(listOf(meituan))
+        lightView.setExpandedLiveActivity(meituan)
+        lightView.measure(
+            View.MeasureSpec.makeMeasureSpec(1280, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(590, View.MeasureSpec.EXACTLY),
+        )
+        lightView.layout(0, 0, 1280, 590)
+        val lightBmp = Bitmap.createBitmap(1280, 590, Bitmap.Config.ARGB_8888)
+        lightView.draw(Canvas(lightBmp))
+        savePng(lightBmp, File(outDir, "13_island_light_theme.png"))
+        assertTrue(countNonBlack(lightBmp) > 50_000)
+
+        // 5. Night Red Mode + Expanded Super Island verification
+        val redView = ClockView(context)
+        redView.animationsEnabled = false
+        redView.applyState(ThemePresets.iosNightRed, true, false, false, null)
+        redView.setLiveActivities(listOf(meituan))
+        redView.setExpandedLiveActivity(meituan)
+        redView.measure(
+            View.MeasureSpec.makeMeasureSpec(1280, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(590, View.MeasureSpec.EXACTLY),
+        )
+        redView.layout(0, 0, 1280, 590)
+        val redBmp = Bitmap.createBitmap(1280, 590, Bitmap.Config.ARGB_8888)
+        redView.draw(Canvas(redBmp))
+        savePng(redBmp, File(outDir, "14_island_night_red.png"))
+        assertTrue(countNonBlack(redBmp) > 15_000)
     }
 
     private fun renderClock(

@@ -96,6 +96,15 @@ fun PreviewScreen(
             }
         }
 
+        if (settings.mode == DisplayMode.ULTRA_LOW_POWER) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = stringResource(R.string.mode_ultra_hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+
         Spacer(Modifier.height(16.dp))
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

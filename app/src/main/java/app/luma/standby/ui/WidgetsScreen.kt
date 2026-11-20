@@ -42,6 +42,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import app.luma.standby.R
+import app.luma.standby.domain.model.DisplayMode
 import app.luma.standby.domain.model.LumaSettings
 import app.luma.standby.domain.model.StoredPlacement
 import app.luma.standby.domain.theme.currentTheme
@@ -78,6 +79,21 @@ fun WidgetsScreen(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         item(key = "preview") { WidgetPreview(settings, resumeTick) }
+
+        if (settings.mode == DisplayMode.ULTRA_LOW_POWER) {
+            item(key = "ultra_notice") {
+                Text(
+                    text = stringResource(R.string.mode_ultra_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.surface)
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                )
+            }
+        }
 
         item(key = "standby_alerts") {
             StandbyAlertsCard(

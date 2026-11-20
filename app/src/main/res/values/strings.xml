@@ -15,6 +15,7 @@
 
     <string name="mode_standard">Standard</string>
     <string name="mode_ultra">Ultra low</string>
+    <string name="mode_ultra_hint">Ultra low pauses network weather, notification alerts, Dynamic Island and spring animations. Switch to Standard for the full StandBy experience.</string>
     <string name="mode_showcase">Showcase</string>
 
     <string name="themes_duplicate_edit">Duplicate &amp; edit</string>

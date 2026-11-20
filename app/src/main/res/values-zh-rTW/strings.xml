@@ -15,6 +15,7 @@
 
     <string name="mode_standard">標準</string>
     <string name="mode_ultra">極省電</string>
+    <string name="mode_ultra_hint">極省電模式會暫停聯網天氣、通知彈窗、靈動島與彈簧動畫，僅保留極簡時鐘與本機電量；切回「標準」即可開啟完整體驗。</string>
     <string name="mode_showcase">展示</string>
 
     <string name="themes_duplicate_edit">複製並編輯</string>

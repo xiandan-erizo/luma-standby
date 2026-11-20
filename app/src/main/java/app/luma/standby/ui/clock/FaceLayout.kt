@@ -46,8 +46,8 @@ data class FaceLayout(
                 }
 
                 // Centered symmetric dual-card stage modeled 1:1 on iPhone StandBy.
-                val stageTop = h * 0.085f
-                val stageBottom = h * 0.905f
+                val stageTop = h * 0.100f
+                val stageBottom = h * 0.895f
                 val stageH = stageBottom - stageTop
                 val outerX = max(w * 0.052f, h * 0.075f)
                 val gutter = min(w * 0.036f, stageH * 0.088f)
@@ -80,7 +80,7 @@ data class FaceLayout(
                 val leftTileBox = if (!withWidgets) {
                     null
                 } else {
-                    FaceBox(leftX, h * 0.922f, leftX + cardW, h * 0.985f)
+                    FaceBox(leftX, h * 0.910f, leftX + cardW, h * 0.978f)
                 }
 
                 return FaceLayout(

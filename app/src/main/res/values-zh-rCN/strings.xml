@@ -15,6 +15,7 @@
 
     <string name="mode_standard">标准</string>
     <string name="mode_ultra">极省电</string>
+    <string name="mode_ultra_hint">极省电模式会暂停联网天气、通知弹窗、灵动岛与弹簧动画，仅保留极简时钟与本地电量；切回「标准」即可开启完整体验。</string>
     <string name="mode_showcase">展示</string>
 
     <string name="themes_duplicate_edit">复制并编辑</string>
