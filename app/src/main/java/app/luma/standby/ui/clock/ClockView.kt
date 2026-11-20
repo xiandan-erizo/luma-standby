@@ -1139,13 +1139,35 @@ class ClockView @JvmOverloads constructor(
                 }
 
                 FaceStyle.FLOAT -> {
+                    val hasBottomPills = widgetTiles.any {
+                        it.slot == WidgetSlot.BOTTOM_LEFT || it.slot == WidgetSlot.BOTTOM_RIGHT
+                    }
+                    val clockBox = if (hasBottomPills) {
+                        FaceBox(layout.clock.left, layout.clock.top, layout.clock.right, h * 0.875f)
+                    } else {
+                        layout.clock
+                    }
                     drawFullscreenTopBar(canvas, layout.date, now, widgetTiles, nightRed, darkSurface, rightAlignedDate = true)
-                    drawFloatFace(canvas, layout.clock, now, nightRed, darkSurface)
+                    drawFloatFace(canvas, clockBox, now, nightRed, darkSurface)
+                    if (hasBottomPills) {
+                        drawFullscreenBottomBar(canvas, w, h, widgetTiles, nightRed, darkSurface)
+                    }
                 }
 
                 FaceStyle.SOLAR -> {
+                    val hasBottomPills = widgetTiles.any {
+                        it.slot == WidgetSlot.BOTTOM_LEFT || it.slot == WidgetSlot.BOTTOM_RIGHT
+                    }
+                    val clockBox = if (hasBottomPills) {
+                        FaceBox(layout.clock.left, layout.clock.top, layout.clock.right, h * 0.875f)
+                    } else {
+                        layout.clock
+                    }
                     drawFullscreenTopBar(canvas, layout.date, now, widgetTiles, nightRed, darkSurface, rightAlignedDate = false)
-                    drawSolarGlassFace(canvas, layout.clock, now, nightRed, darkSurface)
+                    drawSolarGlassFace(canvas, clockBox, now, nightRed, darkSurface)
+                    if (hasBottomPills) {
+                        drawFullscreenBottomBar(canvas, w, h, widgetTiles, nightRed, darkSurface)
+                    }
                 }
             }
         }
@@ -1953,8 +1975,11 @@ class ClockView @JvmOverloads constructor(
         dateHeaderPaint.textSize = fontSize
         val baseline = box.centerY - (dateHeaderPaint.ascent() + dateHeaderPaint.descent()) * 0.5f
 
-        if (rightAlignedDate) {
-            // Top-right crisp `周五 20` (iconic Float badge)
+        val topRightTiles = tiles.filter { it.slot == WidgetSlot.TOP_RIGHT }.take(2)
+        val hasCenterDock = liveActivities.isNotEmpty() || unreadSummary != null
+
+        if (rightAlignedDate && topRightTiles.isEmpty()) {
+            // Iconic Float badge on Top-Right when user has no Top-Right widgets
             dateHeaderPaint.textAlign = Paint.Align.RIGHT
             val dayW = dateHeaderPaint.measureText("  $dayNum")
             dateHeaderPaint.color = textColor
@@ -1962,23 +1987,63 @@ class ClockView @JvmOverloads constructor(
             dateHeaderPaint.color = accentColor
             canvas.drawText(weekday, box.right - dayW, baseline, dateHeaderPaint)
             dateHeaderPaint.textAlign = Paint.Align.LEFT
+        } else if (rightAlignedDate) {
+            // User explicitly placed widgets in TOP_RIGHT: honor their Top-Right slot and
+            // place the compact `周五 20` date cleanly on the Top-Left!
+            dateHeaderPaint.textAlign = Paint.Align.LEFT
+            val wkW = dateHeaderPaint.measureText("$weekday  ")
+            dateHeaderPaint.color = accentColor
+            canvas.drawText(weekday, box.left, baseline, dateHeaderPaint)
+            dateHeaderPaint.color = textColor
+            canvas.drawText(dayNum, box.left + wkW, baseline, dateHeaderPaint)
 
-            // Compact Liquid Glass widget pills aligned top-left (if widgets are active)
-            if (tiles.isNotEmpty()) {
-                val maxW = (box.width - dateHeaderPaint.measureText("$weekday  $dayNum") - box.height * 0.5f).coerceAtLeast(0f)
-                drawCompactGlassPills(canvas, box.left, box.top, maxW, box.height, tiles.take(3), nightRed, darkSurface, alignRight = false)
+            val dateTotalW = dateHeaderPaint.measureText("$weekday  $dayNum")
+            val maxW = if (hasCenterDock) {
+                (box.width * 0.34f).coerceAtLeast(box.height * 1.5f)
+            } else {
+                (box.width - dateTotalW - box.height * 0.5f).coerceAtLeast(0f)
             }
+            drawCompactGlassPills(canvas, box.right - maxW, box.top, maxW, box.height, topRightTiles, nightRed, darkSurface, alignRight = true)
         } else {
-            // Left-aligned full date (`11月20日 星期五`) + right-aligned compact glass widget pills
+            // Solar face: Left-aligned full date (`11月20日 星期五`) + right-aligned TOP_RIGHT pills
             dateHeaderPaint.textAlign = Paint.Align.LEFT
             dateHeaderPaint.color = withAlpha(textColor, 0.88f)
             val dateW = dateHeaderPaint.measureText(fullDate)
             canvas.drawText(fullDate, box.left, baseline, dateHeaderPaint)
 
-            if (tiles.isNotEmpty()) {
-                val maxW = (box.width - dateW - box.height * 0.5f).coerceAtLeast(0f)
-                drawCompactGlassPills(canvas, box.right - maxW, box.top, maxW, box.height, tiles.take(3), nightRed, darkSurface, alignRight = true)
+            if (topRightTiles.isNotEmpty()) {
+                val maxW = if (hasCenterDock) {
+                    (box.width * 0.34f).coerceAtLeast(box.height * 1.5f)
+                } else {
+                    (box.width - dateW - box.height * 0.5f).coerceAtLeast(0f)
+                }
+                drawCompactGlassPills(canvas, box.right - maxW, box.top, maxW, box.height, topRightTiles, nightRed, darkSurface, alignRight = true)
             }
+        }
+    }
+
+    /** Honors BOTTOM_LEFT and BOTTOM_RIGHT widget slots on fullscreen FLOAT & SOLAR faces. */
+    private fun drawFullscreenBottomBar(
+        canvas: Canvas,
+        w: Float,
+        h: Float,
+        tiles: List<WidgetTile>,
+        nightRed: Boolean,
+        darkSurface: Boolean,
+    ) {
+        val barLeft = w * 0.05f
+        val barRight = w * 0.95f
+        val barTop = h * 0.888f
+        val barH = h * 0.086f
+        val halfW = (barRight - barLeft) * 0.48f
+
+        val bottomLeft = tiles.filter { it.slot == WidgetSlot.BOTTOM_LEFT }.take(2)
+        val bottomRight = tiles.filter { it.slot == WidgetSlot.BOTTOM_RIGHT }.take(2)
+        if (bottomLeft.isNotEmpty()) {
+            drawCompactGlassPills(canvas, barLeft, barTop, halfW, barH, bottomLeft, nightRed, darkSurface, alignRight = false)
+        }
+        if (bottomRight.isNotEmpty()) {
+            drawCompactGlassPills(canvas, barRight - halfW, barTop, halfW, barH, bottomRight, nightRed, darkSurface, alignRight = true)
         }
     }
 
